@@ -215,20 +215,20 @@
     <div class="selfhost reveal">
       <div class="selfhost-copy">
         <h3>Prefer to run your own?</h3>
-        <p>Quaestio is open and self-hosts cleanly. Bring your own small AI model — Ollama or anything OpenAI-compatible — and point one env var at it.</p>
+        <p>Quaestio self-hosts with <strong>one command</strong>. It checks your system, sets up everything, and even offers to install the small local AI model — no manual steps, no subscriptions.</p>
         <ul class="hero-check">
-          <li><span class="ok">✓</span> One Python process + systemd service</li>
+          <li><span class="ok">✓</span> One command, auto-setup, works in minutes</li>
           <li><span class="ok">✓</span> Your hardware, your data, your uptime</li>
-          <li><span class="ok">✓</span> Auto-recover: watchdog restarts if it ever wedges</li>
+          <li><span class="ok">✓</span> Auto-restart: service keeps it alive</li>
         </ul>
       </div>
       <div class="code-block">
-<pre><code><span class="c"># a feel for it — full guide in the README</span>
-$ pip install -r requirements.txt
-$ export BOT_TOKEN="your-bot-token"
-$ export OLLAMA_BASE_URL="http://127.0.0.1:11434"
-$ python3 bot.py
-<span class="ok">▸  logged in as Quaestio#9211 · 27 commands synced</span></code></pre>
+<pre><code><span class="c"># copy-paste this one line (macOS or Linux):</span>
+$ curl -fsSL https://quaestio.online/bot/install.sh | bash
+<span class="ok">▸  checks Python + venv + deps
+▸  sets up your local AI brain (Ollama)
+▸  prompts once for your bot token
+▸  installs as a service and starts it</span></code></pre>
         <div class="code-bar"><span class="ok">●</span> rich presence active</div>
       </div>
     </div>

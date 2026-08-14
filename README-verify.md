@@ -1,6 +1,6 @@
 # Quaestio — Website, Publishing & Verification Guide
 
-Domain: **quaestio.online** (Cloudflare in progress)
+Domain: **quaestio.online** (live, served via Cloudflare → GitHub Pages)
 
 ## 1. Where the site lives
 Everything is in this folder (`quaestio-site/`):
@@ -16,16 +16,18 @@ All three pages share one stylesheet. Edit text in the HTML files directly.
   or contact details. They point to "the server operator" since the bot is self-hosted,
   so nothing links back to the owner personally.
 
-## 3. Deploying to quaestio.online (once the server is reachable)
-1. Copy this folder to the server: `scp -r quaestio-site/ ca@100.76.239.124:/opt/quaestio/www/`
-2. Cloudflare Tunnel maps `quaestio.online` → `http://localhost:80` serving `/opt/quaestio/www`
-   (config written when the tunnel is set up; no open ports needed).
-3. HTTPS is automatic via Cloudflare.
+## 3. Deploying the site
+The site is served via GitHub Pages with `quaestio.online` as a custom domain,
+proxied through Cloudflare for HTTPS. To publish updates, just push to `main`:
 
-### Until the server is back (temporary, for verification now)
-Drag this folder onto https://app.netlify.com/drop → instant URLs:
-- Privacy: `https://<name>.netlify.app/privacy.html`
-- Terms:  `https://<name>.netlify.app/terms.html`
+```bash
+git add -A
+git commit -m "change"
+git push
+```
+
+Cloudflare proxies `quaestio.online` and `www` (CNAME → GitHub Pages).
+No server, no open ports, nothing exposed.
 
 ## 4. Invite link (used in the buttons)
 `https://discord.com/oauth2/authorize?client_id=1537428372802506802&permissions=1101994781766&scope=bot`
@@ -37,8 +39,8 @@ Drag this folder onto https://app.netlify.com/drop → instant URLs:
 
 ## 5. Discord Verification checklist (Blue Badge)
 - [x] Bot in 75+ unique servers
-- [x] Privacy Policy URL (temporarily Netlify, final quaestio.online)
-- [x] Terms of Service URL
+- [x] Privacy Policy URL → `https://quaestio.online/privacy.html`
+- [x] Terms of Service URL → `https://quaestio.online/terms.html`
 - [x] App name/username = Quaestio (no emoji / "Discord" / brand impersonation)
 - [x] App icon uploaded (`assets/logo-512.png`) — no trademarks/copyrighted art
 - [x] Description + tags set (General Information)
@@ -49,5 +51,5 @@ Drag this folder onto https://app.netlify.com/drop → instant URLs:
 
 ## 6. Rich Presence asset key
 Large image uploaded to the portal must be named **`logo`**.
-On the server: `RPC_LARGE_IMAGE=logo` in `/etc/quaestio/quaestio.env`.
+On the server: `RPC_LARGE_IMAGE=logo` in `.env` (see `bot/`).
 Optional small image: upload a second asset named e.g. `wrench`, then `RPC_SMALL_IMAGE=wrench`.
