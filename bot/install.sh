@@ -10,7 +10,7 @@
 #   2. Creates a virtualenv (venv) so nothing touches your system Python.
 #   3. Installs dependencies (just discord.py) from requirements.txt.
 #   4. Detects Ollama: prompts to install it if missing (this machine only),
-#      and offers to pull a small model (tinyllama, 0.6 GB) so AI works
+#      and offers to pull a small smart model (qwen2.5:1.5b, ~1 GB) so AI works
 #      immediately with zero manual steps.
 #   5. Prompts once for your Discord bot token, writes .env (chmod 600).
 #   6. Installs a systemd service (Linux) OR prints a run command (macOS).
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${QUAESTIO_DIR:-$HOME/quaestio}"
-MODEL="${QUAESTIO_MODEL:-tinyllama}"
+MODEL="${QUAESTIO_MODEL:-qwen2.5:1.5b}"
 # Pre-set this to host the AI on another computer, e.g.:
 #   OLLAMA_BASE_URL=http://192.168.1.50:11434 curl -fsSL https://quaestio.online/bot/install.sh | bash
 REMOTE_OLLAMA="${OLLAMA_BASE_URL:-}"
@@ -102,7 +102,7 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 if command -v ollama >/dev/null 2>&1; then
   if ! ollama list 2>/dev/null | grep -qi "$MODEL"; then
-    say "Pulling a small AI model ($MODEL, ~0.6 GB) — first run takes a minute or two."
+    say "Pulling a small smart AI model ($MODEL, ~1 GB) — first run takes a minute or two."
     ollama pull "$MODEL" || warn "Model pull failed; you can run 'ollama pull $MODEL' later."
   else
     say "Model '$MODEL' already present."

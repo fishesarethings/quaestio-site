@@ -97,7 +97,7 @@ Server admins can also point their own server at their own box with
 - Replies are streamed with a typing indicator, so it feels human.
 
 - Config: `bot/.env` (copy from `.env.example`)
-- Model: `ollama pull llama3.2` for a bigger brain, `ollama pull tinyllama` for speed
+- Model: `ollama pull qwen3:1.7b` for the smartest small brain, `qwen2.5:1.5b` is the default (Apache 2.0), `qwen2.5:0.5b` for ultra-light
 
 ## Legal
 
@@ -106,7 +106,8 @@ Quaestio is an independent project, not affiliated with, endorsed by, or connect
 ### Model licensing (self-hosted AI)
 Quaestio itself is open source and contains no model weights. Models come from
 Ollama and each carries its own permissive license — all fine to self-host:
-- `tinyllama` — **Apache 2.0** (unrestricted, commercial OK)
+- `qwen2.5` (0.5b / 1.5b) — **Apache 2.0** (unrestricted, commercial OK)
+- `qwen3` (1.7b) — **Apache 2.0**
 - `llama3.2` — **Llama Community License** (free commercial use; only restricted
   above ~700M monthly active users)
 - `gemma2` — **Gemma Terms of Use** (free commercial use up to a large-user

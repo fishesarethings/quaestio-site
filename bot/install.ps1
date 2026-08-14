@@ -9,7 +9,7 @@
 $ErrorActionPreference = "Stop"
 
 $InstallDir = if ($env:QUAESTIO_DIR) { $env:QUAESTIO_DIR } else { Join-Path $HOME "quaestio" }
-$Model = if ($env:QUAESTIO_MODEL) { $env:QUAESTIO_MODEL } else { "tinyllama" }
+$Model = if ($env:QUAESTIO_MODEL) { $env:QUAESTIO_MODEL } else { "qwen2.5:1.5b" }
 $RemoteOllama = $env:OLLAMA_BASE_URL
 $BotDir = Join-Path $InstallDir "bot"
 $Venv = Join-Path $InstallDir ".venv"
@@ -59,7 +59,7 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
 } elseif (-not $RemoteOllama) {
     $have = & ollama list 2>$null
     if ($have -notmatch $Model) {
-        Say "Pulling small AI model ($Model, ~0.6 GB)…"
+        Say "Pulling small smart AI model ($Model, ~1 GB)…"
         & ollama pull $Model
     }
 }

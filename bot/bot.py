@@ -41,7 +41,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # Where Ollama lives. This can be ANOTHER computer on your network, e.g.
 #   OLLAMA_BASE_URL=http://192.168.1.50:11434   (Windows/Linux model host)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "tinyllama")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
 DB_PATH = os.environ.get("DB_PATH", "quaestio.db")
 PREFIX = os.environ.get("PREFIX", "/")
@@ -486,7 +486,7 @@ AI_GROUP = app_commands.Group(name="ai", description="AI settings (admins only)"
 
 
 @AI_GROUP.command(name="model", description="Which model to use (or 'default').")
-@app_commands.describe(model="Model name, e.g. tinyllama / llama3.2, or 'default'")
+@app_commands.describe(model="Model name, e.g. qwen2.5:1.5b, or 'default'")
 async def ai_model(interaction: discord.Interaction, model: str):
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
