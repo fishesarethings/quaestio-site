@@ -11,10 +11,10 @@ Everything is in this folder (`quaestio-site/`):
 
 All three pages share one stylesheet. Edit text in the HTML files directly.
 
-## 2. Final placeholder
-- `terms.html` → section 9 still has `[YOUR COUNTRY / STATE]` — replace with the
-  country/state you operate from. (Privacy/contact fields were intentionally removed —
-  docs point to "the server operator" since the bot is self-hosted.)
+## 2. Legal pages
+- `terms.html` + `privacy.html` are intentionally generic — no personal name, country,
+  or contact details. They point to "the server operator" since the bot is self-hosted,
+  so nothing links back to the owner personally.
 
 ## 3. Deploying to quaestio.online (once the server is reachable)
 1. Copy this folder to the server: `scp -r quaestio-site/ ca@100.76.239.124:/opt/quaestio/www/`
