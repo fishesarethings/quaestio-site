@@ -57,7 +57,7 @@
       </div>
       <ul class="hero-check">
         <li><span class="ok">✓</span> Private by design — chats never leave your machine</li>
-        <li><span class="ok">✓</span> 27 commands, all free</li>
+        <li><span class="ok">✓</span> 32 commands, all free</li>
         <li><span class="ok">✓</span> One small local model, zero API bills</li>
       </ul>
     </div>
@@ -79,7 +79,7 @@
   </div>
 
   <section class="stats reveal">
-    <div class="stat"><span class="stat-num" data-count="27">0</span><span class="stat-label">Commands</span></div>
+    <div class="stat"><span class="stat-num" data-count="32">0</span><span class="stat-label">Commands</span></div>
     <div class="stat"><span class="stat-num" data-count="1">0</span><span class="stat-label">AI brain</span></div>
     <div class="stat"><span class="stat-num" data-count="0" data-suffix="$">0</span><span class="stat-label">Paywalls</span></div>
     <div class="stat"><span class="stat-num" data-count="100" data-suffix="%">0</span><span class="stat-label">Private</span></div>
@@ -126,7 +126,7 @@
 
   <section class="section" id="commands">
     <div class="section-head reveal">
-      <h2>27 commands. <span class="grad">Zero locked behind paywalls.</span></h2>
+      <h2>32 commands. <span class="grad">Zero locked behind paywalls.</span></h2>
       <p>Tap any command to copy it into your clipboard.</p>
     </div>
 
@@ -135,6 +135,10 @@
       <div class="cmd-chips">
         <button class="cmd" data-cmd="/ask">/ask</button>
         <button class="cmd" data-cmd="/summarize">/summarize</button>
+        <button class="cmd" data-cmd="/ai status">/ai status</button>
+        <button class="cmd" data-cmd="/ai model">/ai model</button>
+        <button class="cmd" data-cmd="/ai endpoint">/ai endpoint</button>
+        <button class="cmd" data-cmd="/ai memory">/ai memory</button>
       </div>
     </div>
     <div class="cmd-group reveal">
@@ -241,7 +245,15 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
     <div class="faq">
       <details class="faq-item reveal" open>
         <summary>Is it really free? What&rsquo;s the catch?</summary>
-        <p>Really free. The core — all 27 commands — has no paywall and no premium-gated features. Quaestio runs on the host&rsquo;s own hardware, so there&rsquo;s nothing to meter. Donations are welcome but never required.</p>
+        <p>Really free. The core — all 32 commands — has no paywall and no premium-gated features. Quaestio runs on the host&rsquo;s own hardware, so there&rsquo;s nothing to meter. Donations are welcome but never required.</p>
+      </details>
+      <details class="faq-item reveal">
+        <summary>Can the AI run on a different computer, like Windows?</summary>
+        <p>Yes. Quaestio talks to any Ollama over the network — run Ollama on a spare PC (Windows, Linux or macOS), open its port, and set the endpoint in <code>/ai endpoint</code> (admins) or <code>OLLAMA_BASE_URL</code> in <code>.env</code>. The model host can be as weak as you like; the bot handles one chat at a time and shares the brain fairly across servers.</p>
+      </details>
+      <details class="faq-item reveal">
+        <summary>Can my server run its own model instead?</summary>
+        <p>Admins can point this server at their own Ollama box with <code>/ai endpoint</code> and <code>/ai model</code>. Until then, everyone shares the host&rsquo;s model. Only server admins can change these settings.</p>
       </details>
       <details class="faq-item reveal">
         <summary>How does the AI work, and where does my data go?</summary>

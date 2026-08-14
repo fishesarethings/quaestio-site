@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 """Quaestio — your server's own AI companion.
 
-Self-hosted Discord bot: AI chat (via local Ollama), XP levels, moderation,
-tags, welcomes, and a handful of core utilities. One process, one SQLite file.
+Self-hosted Discord bot: AI chat (via a local/remote Ollama), XP levels,
+moderation, tags, welcomes, and core utilities. One process, one SQLite file.
 
-Requires: a Discord bot token and Ollama running locally (OLLAMA_BASE_URL).
+Design goals (for weak hosts):
+  * One AI call at a time — a fair queue round-robins across servers so a busy
+    server can't starve everyone else, and replies "busy" instead of stacking.
+  * Per-channel conversation memory, so a small model still chats coherently
+    without loading whole-server history.
+  * Human-like replies: streamed in with a typing indicator and natural pauses.
+  * Server admins can override model/endpoint/memory — e.g. point at their own
+    Ollama box (Windows/Linux/macOS) and "host their own" if they want.
+
+Requires: a Discord bot token and an Ollama instance (OLLAMA_BASE_URL). The
+Ollama host can be a different machine on your network or the same box.
 """
 
 import asyncio
@@ -12,6 +22,7 @@ import datetime
 import json
 import os
 import random
+import re
 import sqlite3
 import sys
 import time
@@ -27,14 +38,30 @@ from discord.ext import commands
 # ---------------------------------------------------------------------------
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# Where Ollama lives. This can be ANOTHER computer on your network, e.g.
+#   OLLAMA_BASE_URL=http://192.168.1.50:11434   (Windows/Linux model host)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
-OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "120"))
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "tinyllama")
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
 DB_PATH = os.environ.get("DB_PATH", "quaestio.db")
 PREFIX = os.environ.get("PREFIX", "/")
 WARN_LIMIT_DEFAULT = int(os.environ.get("WARN_LIMIT", "3"))
 RPC_LARGE_IMAGE = os.environ.get("RPC_LARGE_IMAGE", "logo")
 RPC_SMALL_IMAGE = os.environ.get("RPC_SMALL_IMAGE", "")
+
+# "Chat like a person" persona for the small model. Keeps it short, casual,
+# and natural instead of a wall of text.
+PERSONA = (
+    "You are Quaestio, a friendly, dry-witted Discord buddy. Behave like a human:\n"
+    "- reply in 1-4 short casual sentences\n"
+    "- sometimes trail off with ...\n"
+    "- never mention being an AI, a model, Ollama, or Discord's ToS\n"
+    "- ask a question back now and then\n"
+    "You share one small brain with the whole server, so keep it light."
+)
+
+# How much conversation to remember per channel by default (turns).
+MEMORY_DEFAULT = 4
 
 START_TIME = time.time()
 
@@ -80,18 +107,40 @@ def db_init():
     conn.close()
 
 
+def get_cfg(guild_id, key, default=None):
+    conn = db()
+    row = conn.execute(
+        "SELECT value FROM config WHERE guild_id=? AND key=?",
+        (str(guild_id), key),
+    ).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_cfg(guild_id, key, value):
+    conn = db()
+    conn.execute(
+        """INSERT INTO config (guild_id, key, value) VALUES (?, ?, ?)
+           ON CONFLICT(guild_id, key) DO UPDATE SET value = excluded.value""",
+        (str(guild_id), key, value),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
-# Ollama AI (local, no cloud)
+# Ollama AI (local or remote — the URL decides; Windows is fine on the far end)
 # ---------------------------------------------------------------------------
 
-async def ask_ollama(prompt: str) -> str:
+async def ask_ollama(endpoint: str, model: str, prompt: str) -> str:
     payload = json.dumps(
-        {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
+        {"model": model, "prompt": prompt, "stream": False,
+         "options": {"temperature": 0.8, "num_predict": 400}}
     ).encode()
 
     def _request():
         req = urllib.request.Request(
-            f"{OLLAMA_BASE_URL}/api/generate",
+            f"{endpoint}/api/generate",
             data=payload,
             headers={"Content-Type": "application/json"},
         )
@@ -100,13 +149,160 @@ async def ask_ollama(prompt: str) -> str:
 
     try:
         result = await asyncio.to_thread(_request)
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise ConnectionError("AI is offline — is Ollama running?")
+    except urllib.error.URLError:
+        raise ConnectionError("AI is offline — the model box isn't reachable.")
+    except (TimeoutError, OSError):
+        raise ConnectionError("AI timed out. Try again in a moment.")
 
     response = (result.get("response") or "").strip()
     if not response:
-        raise ConnectionError("AI returned an empty response.")
+        raise ConnectionError("AI returned an empty reply.")
     return response
+
+
+def guild_ai_config(guild_id):
+    """Per-server AI settings (admin-overridable) merged over the defaults."""
+    return {
+        "endpoint": get_cfg(guild_id, "ai_endpoint", OLLAMA_BASE_URL),
+        "model": get_cfg(guild_id, "ai_model", OLLAMA_MODEL),
+        "memory": int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT)),
+        "enabled": get_cfg(guild_id, "ai_enabled", "1") != "0",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-channel conversation memory (split conversations & history)
+# ---------------------------------------------------------------------------
+
+class MemoryBank:
+    """Rolling memory per (guild, channel). Small model stays coherent.
+
+    maxlen is the per-channel turn cap; it is trimmed at insert time so a
+    channel can never grow unbounded (weak host friendly).
+    """
+
+    def __init__(self):
+        self._turns = {}
+
+    def push(self, guild_id, channel_id, role, text, maxlen):
+        key = (guild_id, channel_id)
+        dq = self._turns.setdefault(key, [])
+        dq.append((role, text))
+        if len(dq) > maxlen:
+            del dq[: len(dq) - maxlen]
+
+    def context(self, guild_id, channel_id, maxlen):
+        return list(self._turns.get((guild_id, channel_id), []))[-maxlen:]
+
+    def clear(self, guild_id, channel_id):
+        self._turns.pop((guild_id, channel_id), None)
+
+
+memory = MemoryBank()
+
+
+def build_prompt(persona, context, question):
+    lines = [persona, "", "Recent conversation:"]
+    for role, text in context[-6:]:
+        speaker = "member" if role == "user" else "you"
+        lines.append(f"{speaker}: {text}")
+    lines += ["", f"the member just said: {question}", "You reply:"]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Fair AI queue — one model call at a time, spread fairly across servers
+# ---------------------------------------------------------------------------
+
+class BusyError(Exception):
+    pass
+
+
+class FairAIQueue:
+    """Round-robin across guilds so one server can't hog the weak box.
+
+    A single worker runs model calls one at a time. Each guild gets at most
+    one slot per round; if a guild has too many waiting, it's told "busy".
+    """
+
+    def __init__(self, max_waiting=2, busy_reply="Quaestio's head is busy — one chat at a time. Ask again in a moment."):
+        self._queues = {}
+        self._worker = None
+        self._max_waiting = max_waiting
+        self.busy_reply = busy_reply
+
+    def submit(self, guild_id, factory):
+        fut = asyncio.get_running_loop().create_future()
+        q = self._queues.setdefault(str(guild_id), [])
+        if len(q) >= self._max_waiting:
+            fut.set_exception(BusyError(self.busy_reply))
+            return fut
+        q.append((fut, factory))
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(self._run())
+        return fut
+
+    async def _run(self):
+        try:
+            pending = True
+            while pending:
+                pending = False
+                for guild_id in list(self._queues):
+                    q = self._queues[guild_id]
+                    if not q:
+                        continue
+                    pending = True
+                    fut, factory = q.pop(0)
+                    if fut.cancelled():
+                        continue
+                    try:
+                        result = await factory()
+                        if not fut.done():
+                            fut.set_result(result)
+                    except Exception as exc:
+                        if not fut.done():
+                            fut.set_exception(exc)
+                await asyncio.sleep(0)
+        finally:
+            self._worker = None
+
+
+ai_queue = FairAIQueue()
+
+
+# ---------------------------------------------------------------------------
+# Human-like streaming (typing indicator + natural pauses)
+# ---------------------------------------------------------------------------
+
+async def human_type(channel, text):
+    """Stream a reply into the channel like a person typing.
+
+    Shows the typing indicator, reveals the message in chunks via edit +
+    small random pauses, so a fast local model still feels natural.
+    """
+    chunks = []
+    current = ""
+    for token in text.split():
+        if len(current) + len(token) + 1 > 350:
+            chunks.append(current + " " if not current.endswith("\n") else current)
+            current = token
+        else:
+            current = (current + " " + token).lstrip()
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [text]
+
+    async with channel.typing():
+        await asyncio.sleep(0.35 + random.random() * 0.4)
+        msg = await channel.send(chunks[0])
+        for chunk in chunks[1:]:
+            await asyncio.sleep(0.45 + random.random() * 0.5)
+            new_text = (msg.content + " " + chunk).lstrip()
+            if len(new_text) > 1990:
+                break
+            await msg.edit(content=new_text)
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -117,17 +313,17 @@ def xp_for_level(level: int) -> int:
     return 5 * (level ** 2) + 50 * level + 100
 
 
-def add_xp(guild_id: str, user_id: str):
+def add_xp(guild_id, user_id):
     conn = db()
     conn.execute(
         """INSERT INTO xp (guild_id, user_id, messages) VALUES (?, ?, 1)
            ON CONFLICT(guild_id, user_id)
            DO UPDATE SET messages = messages + 1""",
-        (guild_id, user_id),
+        (str(guild_id), str(user_id)),
     )
     row = conn.execute(
         "SELECT messages FROM xp WHERE guild_id=? AND user_id=?",
-        (guild_id, user_id),
+        (str(guild_id), str(user_id)),
     ).fetchone()
     conn.commit()
     conn.close()
@@ -136,32 +332,9 @@ def add_xp(guild_id: str, user_id: str):
 
 def level_for_messages(messages: int) -> int:
     level = 0
-    required = xp_for_level(level + 1)
-    while messages >= required and level < 100:
+    while messages >= xp_for_level(level + 1) and level < 100:
         level += 1
-        required = xp_for_level(level + 1)
     return level
-
-
-def get_owner_config(guild: discord.Guild, key: str, default=None):
-    conn = db()
-    row = conn.execute(
-        "SELECT value FROM config WHERE guild_id=? AND key=?",
-        (str(guild.id), key),
-    ).fetchone()
-    conn.close()
-    return row["value"] if row else default
-
-
-def set_owner_config(guild: discord.Guild, key: str, value: str):
-    conn = db()
-    conn.execute(
-        """INSERT INTO config (guild_id, key, value) VALUES (?, ?, ?)
-           ON CONFLICT(guild_id, key) DO UPDATE SET value = excluded.value""",
-        (str(guild.id), key, value),
-    )
-    conn.commit()
-    conn.close()
 
 
 def is_admin(user: discord.Member) -> bool:
@@ -175,23 +348,25 @@ def is_admin(user: discord.Member) -> bool:
 @bot.event
 async def on_ready():
     db_init()
+    command_count = len(bot.tree.get_commands()) + sum(
+        len(g.after_invoke and g.commands or []) for g in bot.tree.get_commands()
+    )
     activity = discord.Activity(
         type=discord.ActivityType.watching,
         name="/ask",
         details=f"AI · {OLLAMA_MODEL}",
-        state="27 commands · free",
+        state=f"{command_count} commands · free",
         assets={"large_image": RPC_LARGE_IMAGE},
     )
     if RPC_SMALL_IMAGE:
         activity.assets["small_image"] = RPC_SMALL_IMAGE
     await bot.change_presence(activity=activity)
-    invited = sum(1 for g in (await bot.application_info()).guilds)
-    print(f"quæstio: logged in as {bot.user} · {len(bot.guilds)} servers · {invited} invites")
+    print(f"quaestio: logged in as {bot.user} · {len(bot.guilds)} servers")
     try:
         synced = await bot.tree.sync()
-        print(f"quæstio: {len(synced)} slash commands synced")
+        print(f"quaestio: {len(synced)} slash commands synced")
     except Exception as exc:
-        print(f"quæstio: sync failed: {exc}")
+        print(f"quaestio: sync failed: {exc}")
 
 
 @bot.event
@@ -201,11 +376,11 @@ async def on_message(message: discord.Message):
     if message.content.startswith(PREFIX):
         await bot.process_commands(message)
         return
-    messages = add_xp(str(message.guild.id), str(message.author.id))
+    messages = add_xp(message.guild.id, message.author.id)
     new_level = level_for_messages(messages)
     old_level = level_for_messages(messages - 1)
     if new_level > old_level and new_level > 1:
-        role_id = get_owner_config(message.guild, "levelrole")
+        role_id = get_cfg(message.guild.id, "levelrole")
         try:
             await message.channel.send(
                 f"🎉 {message.author.mention} reached **level {new_level}**!"
@@ -219,25 +394,20 @@ async def on_message(message: discord.Message):
                     await message.author.add_roles(role)
                 except discord.Forbidden:
                     pass
-        welcome_channel_id = get_owner_config(message.guild, "levelup_channel")
-        if welcome_channel_id:
-            channel = message.guild.get_channel(int(welcome_channel_id))
-            if channel:
-                await channel.send(message.author.mention)
 
 
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.bot:
         return
-    channel_id = get_owner_config(member.guild, "welcome_channel")
+    channel_id = get_cfg(member.guild.id, "welcome_channel")
     if not channel_id:
         return
     channel = member.guild.get_channel(int(channel_id))
     if not channel:
         return
-    text = get_owner_config(
-        member.guild, "welcome_message",
+    text = get_cfg(
+        member.guild.id, "welcome_message",
         f"Welcome to {member.guild.name}, {member.mention}! 👋",
     )
     try:
@@ -312,31 +482,126 @@ async def eightball(interaction: discord.Interaction, question: str):
 # AI
 # ---------------------------------------------------------------------------
 
-AI_LOCK = asyncio.Lock()
+AI_GROUP = app_commands.Group(name="ai", description="AI settings (admins only)")
 
 
-@bot.tree.command(name="ask", description="Ask Quaestio's local AI a question.")
-@app_commands.describe(prompt="Your question or prompt")
+@AI_GROUP.command(name="model", description="Which model to use (or 'default').")
+@app_commands.describe(model="Model name, e.g. tinyllama / llama3.2, or 'default'")
+async def ai_model(interaction: discord.Interaction, model: str):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
+    if model.lower() in ("default", "reset", "off"):
+        set_cfg(interaction.guild.id, "ai_model", "")
+        await interaction.response.send_message("AI model reset to the host default.")
+        return
+    set_cfg(interaction.guild.id, "ai_model", model)
+    await interaction.response.send_message(f"AI model → **{model}** on this server.")
+
+
+@AI_GROUP.command(name="endpoint", description="Point at your own AI host (or 'default').")
+@app_commands.describe(url="Your Ollama URL, e.g. http://192.168.1.50:11434, or 'default'")
+async def ai_endpoint(interaction: discord.Interaction, url: str):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
+    if url.lower() in ("default", "reset", "off"):
+        set_cfg(interaction.guild.id, "ai_endpoint", "")
+        await interaction.response.send_message("AI endpoint reset to the host default.")
+        return
+    if not re.match(r"^https?://", url):
+        await interaction.response.send_message("Must start with http:// or https://.", ephemeral=True)
+        return
+    set_cfg(interaction.guild.id, "ai_endpoint", url)
+    await interaction.response.send_message(f"AI endpoint → **{url}** on this server.")
+
+
+@AI_GROUP.command(name="memory", description="How many turns this server's chats remember.")
+@app_commands.describe(turns="1-12 (default 4). Lower = faster on weak hosts.")
+async def ai_memory(interaction: discord.Interaction, turns: int):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
+    turns = max(1, min(turns, 12))
+    set_cfg(interaction.guild.id, "ai_memory", str(turns))
+    await interaction.response.send_message(f"This server remembers **{turns}** turns per channel.")
+
+
+@AI_GROUP.command(name="toggle", description="Enable or disable AI chat on this server.")
+@app_commands.describe(enabled="true to enable, false to disable")
+async def ai_toggle(interaction: discord.Interaction, enabled: bool):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
+    set_cfg(interaction.guild.id, "ai_enabled", "1" if enabled else "0")
+    await interaction.response.send_message(f"AI chat {'enabled' if enabled else 'disabled'}.")
+
+
+@AI_GROUP.command(name="status", description="Show this server's AI settings.")
+async def ai_status(interaction: discord.Interaction):
+    cfg = guild_ai_config(interaction.guild.id)
+    await interaction.response.send_message(
+        f"**AI settings**\n"
+        f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
+        f"Model: `{cfg['model']}`\n"
+        f"Endpoint: `{cfg['endpoint']}`\n"
+        f"Memory: {cfg['memory']} turns/channel",
+        ephemeral=True,
+    )
+
+
+def _remember_reply(interaction, answer):
+    cfg = guild_ai_config(interaction.guild.id)
+    question = getattr(interaction, "_q_prompt", "")[:400]
+    memory.push(interaction.guild.id, interaction.channel.id, "user", question, cfg["memory"])
+    memory.push(interaction.guild.id, interaction.channel.id, "bot", answer[:400], cfg["memory"])
+
+
+@bot.tree.command(name="ask", description="Chat with Quaestio's local AI.")
+@app_commands.describe(prompt="What you want to say or ask")
 async def ask(interaction: discord.Interaction, prompt: str):
+    cfg = guild_ai_config(interaction.guild.id)
+    if not cfg["enabled"]:
+        await interaction.response.send_message("AI chat is disabled here.", ephemeral=True)
+        return
     await interaction.response.defer(thinking=True)
-    async with AI_LOCK:
-        try:
-            async with interaction.channel.typing():
-                answer = await ask_ollama(prompt)
-        except ConnectionError as exc:
-            await interaction.followup.send(f"⚠️ {exc}")
-            return
-    if len(answer) > 1900:
-        answer = answer[:1950] + "…"
-    embed = discord.Embed(color=0xA78BFA)
-    embed.add_field(name="🧠 Prompt", value=f"> {prompt[:1024]}", inline=False)
-    embed.add_field(name="Quaestio", value=answer, inline=False)
-    await interaction.followup.send(embed=embed)
+    interaction._q_prompt = prompt
+
+    context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
+    full_prompt = build_prompt(PERSONA, context, prompt)
+
+    async def factory():
+        return await ask_ollama(cfg["endpoint"], cfg["model"], full_prompt)
+
+    fut = ai_queue.submit(interaction.guild.id, factory)
+    try:
+        async with interaction.channel.typing():
+            answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+            await asyncio.sleep(0)
+    except BusyError as exc:
+        await interaction.followup.send(str(exc))
+        return
+    except asyncio.TimeoutError:
+        await interaction.followup.send("The AI took too long. Try again in a moment.")
+        return
+    except ConnectionError as exc:
+        await interaction.followup.send(f"⚠️ {exc}")
+        return
+    except asyncio.CancelledError:
+        raise
+
+    _remember_reply(interaction, answer)
+    await interaction.followup.send("*(thinking...)*", ephemeral=True)
+    await human_type(interaction.channel, answer)
 
 
 @bot.tree.command(name="summarize", description="Summarize the last N messages in this channel.")
 @app_commands.describe(limit="How many messages to summarize (default 20, max 60)")
 async def summarize(interaction: discord.Interaction, limit: int = 20):
+    cfg = guild_ai_config(interaction.guild.id)
+    if not cfg["enabled"]:
+        await interaction.response.send_message("AI chat is disabled here.", ephemeral=True)
+        return
     limit = max(1, min(limit, 60))
     await interaction.response.defer(thinking=True)
     texts = []
@@ -353,16 +618,30 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         "Summarize these Discord messages in a few short bullets. Keep it neutral "
         "and concise.\n\n" + "\n".join(reversed(texts))
     )
-    async with AI_LOCK:
-        try:
-            async with interaction.channel.typing():
-                answer = await ask_ollama(prompt)
-        except ConnectionError as exc:
-            await interaction.followup.send(f"⚠️ {exc}")
-            return
+
+    async def factory():
+        return await ask_ollama(cfg["endpoint"], cfg["model"], prompt)
+
+    fut = ai_queue.submit(interaction.guild.id, factory)
+    try:
+        async with interaction.channel.typing():
+            answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+    except BusyError as exc:
+        await interaction.followup.send(str(exc))
+        return
+    except asyncio.TimeoutError:
+        await interaction.followup.send("The AI took too long. Try again in a moment.")
+        return
+    except ConnectionError as exc:
+        await interaction.followup.send(f"⚠️ {exc}")
+        return
+
     await interaction.followup.send(
         f"📄 **Summary of last {len(texts)} messages**\n{answer[:1900]}"
     )
+
+
+bot.tree.add_command(AI_GROUP)
 
 
 # ---------------------------------------------------------------------------
@@ -414,16 +693,14 @@ async def levelrole(interaction: discord.Interaction, role: str):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
     if role.lower() in ("none", "off", "remove"):
-        set_owner_config(interaction.guild, "levelrole", "")
+        set_cfg(interaction.guild.id, "levelrole", "")
         await interaction.response.send_message("Level-up role disabled.")
         return
     resolved = discord.utils.get(interaction.guild.roles, name=role)
     if not resolved:
-        await interaction.response.send_message(
-            f"Role `{role}` not found.", ephemeral=True
-        )
+        await interaction.response.send_message(f"Role `{role}` not found.", ephemeral=True)
         return
-    set_owner_config(interaction.guild, "levelrole", str(resolved.id))
+    set_cfg(interaction.guild.id, "levelrole", str(resolved.id))
     await interaction.response.send_message(f"Level-ups now grant **{resolved.name}**.")
 
 
@@ -431,23 +708,16 @@ async def levelrole(interaction: discord.Interaction, role: str):
 # Moderation
 # ---------------------------------------------------------------------------
 
-def staff_only(func):
-    @commands.has_permissions(manage_messages=True, kick_members=True, ban_members=True)
-    async def wrapper(interaction, *args, **kwargs):
-        return await func(interaction, *args, **kwargs)
-    return wrapper
-
-
 def _warn_db(guild_id, user_id, reason):
     conn = db()
     conn.execute(
         "INSERT INTO warned (guild_id, user_id, reason, at) VALUES (?, ?, ?, ?)",
-        (guild_id, user_id, reason, datetime.datetime.now().isoformat()),
+        (str(guild_id), str(user_id), reason, datetime.datetime.now().isoformat()),
     )
     conn.commit()
     count = conn.execute(
         "SELECT COUNT(*) AS n FROM warned WHERE guild_id=? AND user_id=?",
-        (guild_id, user_id),
+        (str(guild_id), str(user_id)),
     ).fetchone()["n"]
     conn.close()
     return count
@@ -459,8 +729,8 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
-    count = _warn_db(str(interaction.guild.id), str(member.id), reason)
-    limit = int(get_owner_config(interaction.guild, "warnlimit") or WARN_LIMIT_DEFAULT)
+    count = _warn_db(interaction.guild.id, member.id, reason)
+    limit = int(get_cfg(interaction.guild.id, "warnlimit") or WARN_LIMIT_DEFAULT)
     msg = f"⚠️ {member.mention} warned — **{count}/{limit}**\n> {reason}"
     await interaction.response.send_message(msg)
     if count >= limit:
@@ -512,7 +782,7 @@ async def warnlimit(interaction: discord.Interaction, limit: int):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
     limit = max(1, min(limit, 20))
-    set_owner_config(interaction.guild, "warnlimit", str(limit))
+    set_cfg(interaction.guild.id, "warnlimit", str(limit))
     await interaction.response.send_message(f"Auto-kick limit set to **{limit}** warns.")
 
 
@@ -545,7 +815,7 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 
 
 @bot.tree.command(name="unban", description="Unban a user by name.")
-@app_commands.describe(user="Name of the banned user (e.g. user#1234 or just name)")
+@app_commands.describe(user="Name of the banned user")
 async def unban(interaction: discord.Interaction, user: str):
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
@@ -555,7 +825,7 @@ async def unban(interaction: discord.Interaction, user: str):
     if target is None:
         await interaction.response.send_message(f"No banned user matching `{user}`.", ephemeral=True)
         return
-    await interaction.guild.unban(target.user, reason="Quæstio unban")
+    await interaction.guild.unban(target.user, reason="Quaestio unban")
     await interaction.response.send_message(f"🔓 Unbanned {target.user}.")
 
 
@@ -684,7 +954,7 @@ async def welcome(interaction: discord.Interaction, enabled: bool):
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
-    set_owner_config(interaction.guild, "welcome_enabled", "1" if enabled else "0")
+    set_cfg(interaction.guild.id, "welcome_enabled", "1" if enabled else "0")
     await interaction.response.send_message(f"Welcome messages {'enabled' if enabled else 'disabled'}.")
 
 
@@ -694,7 +964,7 @@ async def welcomechannel(interaction: discord.Interaction, channel: discord.Text
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
-    set_owner_config(interaction.guild, "welcome_channel", str(channel.id))
+    set_cfg(interaction.guild.id, "welcome_channel", str(channel.id))
     await interaction.response.send_message(f"👋 Welcomes → {channel.mention}")
 
 
@@ -704,7 +974,7 @@ async def welcomemessage(interaction: discord.Interaction, text: str):
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
-    set_owner_config(interaction.guild, "welcome_message", text)
+    set_cfg(interaction.guild.id, "welcome_message", text)
     await interaction.response.send_message("Welcome text set.")
 
 

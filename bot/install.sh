@@ -21,6 +21,9 @@ set -euo pipefail
 
 INSTALL_DIR="${QUAESTIO_DIR:-$HOME/quaestio}"
 MODEL="${QUAESTIO_MODEL:-tinyllama}"
+# Pre-set this to host the AI on another computer, e.g.:
+#   OLLAMA_BASE_URL=http://192.168.1.50:11434 curl -fsSL https://quaestio.online/bot/install.sh | bash
+REMOTE_OLLAMA="${OLLAMA_BASE_URL:-}"
 PY_MIN=(3 10)
 
 say()  { printf '\033[1;36m[quaestio]\033[0m %s\n' "$*"; }
@@ -121,7 +124,12 @@ if [[ ! -f "$ENV_FILE" ]] || ! grep -q '[^#]' "$ENV_FILE" 2>/dev/null || grep -q
   fi
   [[ -z "$token" ]] && die "No token given."
   printf 'BOT_TOKEN=%s\n' "$token" > "$ENV_FILE"
-  printf 'OLLAMA_BASE_URL=http://127.0.0.1:11434\nOLLAMA_MODEL=%s\nRPC_LARGE_IMAGE=logo\n' "$MODEL" >> "$ENV_FILE"
+  if [[ -n "$REMOTE_OLLAMA" ]]; then
+    printf 'OLLAMA_BASE_URL=%s\n' "$REMOTE_OLLAMA" >> "$ENV_FILE"
+  else
+    printf 'OLLAMA_BASE_URL=http://127.0.0.1:11434\n' >> "$ENV_FILE"
+  fi
+  printf 'OLLAMA_MODEL=%s\nRPC_LARGE_IMAGE=logo\n' "$MODEL" >> "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   say "Token saved to $ENV_FILE (permissions 600)."
 else
