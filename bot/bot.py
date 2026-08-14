@@ -349,7 +349,7 @@ def is_admin(user: discord.Member) -> bool:
 async def on_ready():
     db_init()
     command_count = len(bot.tree.get_commands()) + sum(
-        len(g.after_invoke and g.commands or []) for g in bot.tree.get_commands()
+        len(g.commands) for g in bot.tree.get_commands() if isinstance(g, app_commands.Group)
     )
     activity = discord.Activity(
         type=discord.ActivityType.watching,
