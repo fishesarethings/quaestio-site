@@ -14,20 +14,24 @@ The custom domain **quaestio.online** is live, served through Cloudflare → Git
 
 Quaestio is a small Discord bot that runs a tiny local AI model on the server owner's own hardware. It answers one conversation at a time, typed out like a person — with no cloud, no API bills, and no subscriptions. Ever.
 
-Alongside the AI it ships 32 slash commands:
+Alongside the AI it ships 29 slash commands:
 
 | Area | Commands |
 |---|---|
-| 🤖 AI | `/ask` `/summarize` `/ai model` `/ai endpoint` `/ai memory` `/ai toggle` `/ai status` |
-| 🏆 Levels | `/rank` `/top` `/levelrole` |
-| 🛡️ Moderation | `/warn` `/warns` `/delwarns` `/warnlimit` `/kick` `/ban` `/unban` `/purge` `/mute` `/unmute` |
+| 🤖 AI | `/ask` `/summarize` `/ai model` `/ai toggle` `/ai status` `/panel` |
+| 🏆 Levels | `/rank` `/top` |
+| 🛡️ Moderation | `/warn` `/warns` `/delwarns` `/kick` `/ban` `/unban` `/purge` `/mute` `/unmute` |
 | 🏷️ Tags | `/tag` `/tagcreate` `/tagdelete` `/tags` |
-| 👋 Welcome | `/welcome` `/welcomechannel` `/welcomemessage` |
 | 🧭 Core | `/ping` `/uptime` `/about` `/invite` `/8ball` |
 
-The `/ai` settings are **admin-only** — a server admin can point this server at
-their own Ollama box (any OS, including Windows) to host their own model, or
-revert to the shared one with `default`.
+The `/ai` settings are **admin-only** — a server admin can pick from the models
+on their configured AI host (`/ai model` autocompletes from a live scan), or
+revert to the shared default with `default`.
+
+Server admins can manage everything from the **web panel** at
+`/panel` (or the dashboard link in the site header): AI model, custom
+instructions, memory, per-server AI quota, welcome messages, level role and the
+warn-kick limit — with live previews and saved **encrypted at rest**.
 
 ## Site
 
@@ -40,10 +44,12 @@ terms.html      Terms of service
 style.css       Design system (dark theme, gradients, animations)
 script.js       Animations, copy-to-clipboard, counters, scroll reveal
 assets/         Circular transparent-background logos (256 / 512 / 1024)
-bot/bot.py      The bot itself (32 slash commands, one process, one SQLite file)
+bot/bot.py      The bot itself (29 slash commands, one process, one SQLite file)
+bot/config.py   Shared encrypted-at-rest storage (Fernet) — bot + dashboard
 bot/install.sh  Single-command installer (macOS + Linux)
 bot/install.ps1 Windows installer (PowerShell)
 bot/            requirements.txt + .env.example
+dashboard/      Admin web panel (FastAPI + Discord OAuth + static UI)
 ```
 
 ### Editing & publishing
@@ -87,13 +93,34 @@ On the model host, make Ollama listen on the network:
 `OLLAMA_HOST=0.0.0.0:11434 ollama serve` (set `OLLAMA_HOST` env var on Windows).
 
 Server admins can also point their own server at their own box with
-`/ai endpoint` + `/ai model` (no restart needed).
+`/ai model` + the web panel (no restart needed).
+
+### Admin web panel (dashboard)
+A small FastAPI app in `dashboard/` that shares the bot's SQLite DB and
+encryption key. Sign in with Discord (server **admins** only see their own
+servers) and edit AI model / instructions / memory / quota, welcomes, level
+role and warn limits with live previews. Deploy with:
+
+```bash
+python3 -m venv dashboard/.venv
+dashboard/.venv/bin/pip install -r dashboard/requirements.txt
+cp bot/config.py dashboard/          # shares the same crypto module
+DISCORD_CLIENT_ID=... DISCORD_CLIENT_SECRET=... \
+DISCORD_REDIRECT_URI=https://admin.quaestio.online/auth/callback \
+SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))") \
+DB_PATH=bot/quaestio.db \
+dashboard/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8900
+```
+
+Register `https://admin.quaestio.online/auth/callback` (or your tunnel URL) as
+a Redirect in the Discord Developer Portal → OAuth2, scopes `identify guilds`.
 
 ### Weak-host friendliness
 - One AI call at a time — a fair queue round-robins across servers, and says
   "busy" instead of stacking up requests.
-- Per-channel memory (default 4 turns, `/ai memory` to tune) so a small model
-  chats coherently without loading whole-server history.
+- Per-channel memory (default 4 turns) so a small model chats coherently
+  without loading whole-server history. Tune it in the web panel.
+- Per-server AI quota (calls/hour) so one chatty server can't hog a shared host.
 - Replies are streamed with a typing indicator, so it feels human.
 
 - Config: `bot/.env` (copy from `.env.example`)

@@ -33,10 +33,16 @@ if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
     $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
     Say "Downloading Quaestio bot code…"
     Invoke-WebRequest -Uri "$base/bot.py" -OutFile (Join-Path $BotDir "bot.py") -UseBasicParsing
+    Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/requirements.txt" -OutFile (Join-Path $BotDir "requirements.txt") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/.env.example" -OutFile (Join-Path $BotDir ".env.example") -UseBasicParsing
 } else {
     Say "Bot code already present at $BotDir — skipping download."
+    if (-not (Test-Path (Join-Path $BotDir "config.py"))) {
+        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        Say "Fetching config.py…"
+        Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
+    }
 }
 
 # --- 3. Virtualenv + deps ----------------------------------------------------
@@ -47,6 +53,14 @@ if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {
 Say "Installing dependencies…"
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet --upgrade pip
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet -r (Join-Path $BotDir "requirements.txt")
+
+# --- 3b. Encryption keyfile --------------------------------------------------
+$KeyFile = if ($env:QUAESTIO_KEY_FILE) { $env:QUAESTIO_KEY_FILE } else { Join-Path $env:USERPROFILE ".quaestio\keyfile" }
+if (-not (Test-Path $KeyFile)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $KeyFile) | Out-Null
+    & (Join-Path $Venv "Scripts\python.exe") -c "from cryptography.fernet import Fernet; open(r'$KeyFile','wb').write(Fernet.generate_key())"
+    Say "Encryption key created at $KeyFile."
+}
 
 # --- 4. Ollama ---------------------------------------------------------------
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {

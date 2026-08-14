@@ -43,6 +43,26 @@ need_python() {
   return 1
 }
 
+# --- 1b. Encryption keyfile ----------------------------------------------------
+keyfile() {
+  local keyfile="${QUAESTIO_KEY_FILE:-/etc/quaestio/keyfile}"
+  if [[ ! -f "$keyfile" ]]; then
+    say "Creating encryption key at $keyfile (needs sudo on Linux)."
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      sudo mkdir -p "$(dirname "$keyfile")"
+      sudo python3 -c "from cryptography.fernet import Fernet; import sys; open('$keyfile','wb').write(Fernet.generate_key())" 2>/dev/null \
+        || sudo "$VENV/bin/python" -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())"
+      sudo chmod 600 "$keyfile"
+    else
+      mkdir -p "$(dirname "$keyfile")"
+      python3 -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())" 2>/dev/null \
+        || "$VENV/bin/python" -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())"
+      chmod 600 "$keyfile"
+    fi
+    say "Keyfile created."
+  fi
+}
+
 if ! need_python; then
   warn "Python ${PY_MIN[0]}.${PY_MIN[1]}+ not found."
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -69,10 +89,17 @@ if [[ ! -f "$BOT_DIR/bot.py" ]]; then
   say "Downloading Quaestio bot code…"
   BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
   curl -fsSL "$BASE/bot.py" -o "$BOT_DIR/bot.py" || die "Could not download bot.py (check your network)."
+  curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
   curl -fsSL "$BASE/requirements.txt" -o "$BOT_DIR/requirements.txt"
   curl -fsSL "$BASE/.env.example" -o "$BOT_DIR/.env.example" || true
 else
   say "Bot code already present at $BOT_DIR — skipping download."
+  # Make sure config.py exists too (added in a later version)
+  if [[ ! -f "$BOT_DIR/config.py" ]]; then
+    say "Fetching config.py…"
+    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+    curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
+  fi
 fi
 
 # --- 3. Virtualenv + deps ------------------------------------------------------
@@ -83,6 +110,9 @@ fi
 say "Installing dependencies…"
 "$VENV/bin/pip" --quiet install --upgrade pip
 "$VENV/bin/pip" --quiet install -r "$BOT_DIR/requirements.txt"
+
+# --- 3b. Encryption keyfile ----------------------------------------------------
+keyfile
 
 # --- 4. Ollama (AI) ------------------------------------------------------------
 if ! command -v ollama >/dev/null 2>&1; then

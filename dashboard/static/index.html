@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quaestio · Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">⚡ Quaestio <span>admin</span></div>
+  <div id="topbar-user" class="topbar-user"></div>
+</div>
+
+<main id="app" class="app">
+  <!-- Not signed in -->
+  <section id="login-view" class="card center hidden">
+    <h1>Quaestio admin</h1>
+    <p class="muted">Manage AI settings, custom instructions, welcomes and more for servers where you're an admin.</p>
+    <a class="btn" href="/auth/login">Sign in with Discord</a>
+    <p id="login-error" class="error hidden"></p>
+  </section>
+
+  <!-- Server picker -->
+  <section id="picker-view" class="hidden">
+    <h1>Your servers</h1>
+    <p class="muted">Pick a server to manage.</p>
+    <div id="guild-list" class="guild-list"></div>
+  </section>
+
+  <!-- Settings -->
+  <section id="settings-view" class="hidden">
+    <div class="settings-head">
+      <button id="back-btn" class="btn-ghost">← All servers</button>
+      <h1 id="settings-guild-name"></h1>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="ai">AI</button>
+      <button class="tab" data-tab="welcome">Welcome</button>
+      <button class="tab" data-tab="levels">Levels</button>
+      <button class="tab" data-tab="moderation">Moderation</button>
+    </div>
+
+    <!-- AI tab -->
+    <div class="tab-panel active" id="panel-ai">
+      <div class="card">
+        <label class="switch-row">
+          <span><strong>AI chat</strong><br><small>Allow members to talk to the AI in this server.</small></span>
+          <input type="checkbox" id="ai_enabled">
+        </label>
+      </div>
+
+      <div class="card">
+        <label for="ai_endpoint">AI host (Ollama)</label>
+        <input type="text" id="ai_endpoint" placeholder="http://127.0.0.1:11434">
+        <p class="hint">You can self-host your own model server and point at it here. Defaults to the bot's host.</p>
+
+        <label for="ai_model">Model</label>
+        <div class="model-row">
+          <select id="ai_model"></select>
+          <button id="refresh-models" class="btn-ghost">↻ Scan</button>
+        </div>
+        <p id="model-scan-status" class="hint"></p>
+
+        <label for="ai_memory">Memory (turns remembered per channel)</label>
+        <input type="number" id="ai_memory" min="1" max="12">
+
+        <label for="ai_quota">AI calls per hour (0 = unlimited)</label>
+        <input type="number" id="ai_quota" min="0">
+
+        <label for="ai_instructions">Custom instructions</label>
+        <textarea id="ai_instructions" rows="6"
+          placeholder="e.g. Always answer in short, friendly messages. Never mention you are an AI."></textarea>
+        <p class="hint">Stored encrypted. These guide how the AI behaves on this server and override its default persona.</p>
+      </div>
+
+      <div class="card">
+        <button id="save-ai" class="btn">Save AI settings</button>
+        <span id="save-status-ai" class="save-status"></span>
+      </div>
+    </div>
+
+    <!-- Welcome tab -->
+    <div class="tab-panel" id="panel-welcome">
+      <div class="card">
+        <label class="switch-row">
+          <span><strong>Welcome messages</strong><br><small>Greet new members automatically.</small></span>
+          <input type="checkbox" id="welcome_enabled">
+        </label>
+      </div>
+      <div class="card">
+        <label for="welcome_channel">Channel ID</label>
+        <input type="text" id="welcome_channel" placeholder="e.g. 123456789012345678">
+        <label for="welcome_message">Message</label>
+        <textarea id="welcome_message" rows="3" placeholder="Welcome {member}! 🎉"></textarea>
+        <p class="hint">Use <code>{member}</code> for the new member's name, <code>{guild}</code> for the server name.</p>
+        <div class="preview">
+          <p class="preview-title">Preview</p>
+          <div id="welcome-preview" class="preview-box">👋</div>
+        </div>
+        <button id="save-welcome" class="btn">Save welcome settings</button>
+        <span id="save-status-welcome" class="save-status"></span>
+      </div>
+    </div>
+
+    <!-- Levels tab -->
+    <div class="tab-panel" id="panel-levels">
+      <div class="card">
+        <label for="levelrole">Role granted on level-up (role ID, or empty)</label>
+        <input type="text" id="levelrole" placeholder="Role ID">
+        <p class="hint">XP levels are tracked automatically. Set a role ID to auto-assign it on every level up.</p>
+        <button id="save-levels" class="btn">Save level settings</button>
+        <span id="save-status-levels" class="save-status"></span>
+      </div>
+    </div>
+
+    <!-- Moderation tab -->
+    <div class="tab-panel" id="panel-moderation">
+      <div class="card">
+        <label for="warnlimit">Warnings before auto-kick</label>
+        <input type="number" id="warnlimit" min="1" max="20">
+        <button id="save-moderation" class="btn">Save moderation settings</button>
+        <span id="save-status-moderation" class="save-status"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

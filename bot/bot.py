@@ -33,6 +33,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config as quaestio_config
+from config import decrypt, encrypt, maybe_decrypt, maybe_encrypt
+
 # ---------------------------------------------------------------------------
 # Config (env vars, .env is loaded by the launcher or install script)
 # ---------------------------------------------------------------------------
@@ -101,6 +104,10 @@ def db_init():
             guild_id TEXT, name TEXT, content TEXT, author TEXT, at TEXT,
             PRIMARY KEY (guild_id, name)
         );
+        CREATE TABLE IF NOT EXISTS usage (
+            guild_id TEXT, bucket TEXT, calls INTEGER DEFAULT 0,
+            PRIMARY KEY (guild_id, bucket)
+        );
         """
     )
     conn.commit()
@@ -114,7 +121,9 @@ def get_cfg(guild_id, key, default=None):
         (str(guild_id), key),
     ).fetchone()
     conn.close()
-    return row["value"] if row else default
+    if row is None:
+        return default
+    return maybe_decrypt(key, row["value"])
 
 
 def set_cfg(guild_id, key, value):
@@ -122,7 +131,7 @@ def set_cfg(guild_id, key, value):
     conn.execute(
         """INSERT INTO config (guild_id, key, value) VALUES (?, ?, ?)
            ON CONFLICT(guild_id, key) DO UPDATE SET value = excluded.value""",
-        (str(guild_id), key, value),
+        (str(guild_id), key, maybe_encrypt(key, str(value))),
     )
     conn.commit()
     conn.close()
@@ -161,13 +170,53 @@ async def ask_ollama(endpoint: str, model: str, prompt: str) -> str:
 
 
 def guild_ai_config(guild_id):
-    """Per-server AI settings (admin-overridable) merged over the defaults."""
+    """Per-server AI settings (admin-overridable via web UI) merged over defaults."""
     return {
         "endpoint": get_cfg(guild_id, "ai_endpoint", OLLAMA_BASE_URL),
         "model": get_cfg(guild_id, "ai_model", OLLAMA_MODEL),
         "memory": int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT)),
         "enabled": get_cfg(guild_id, "ai_enabled", "1") != "0",
+        "instructions": get_cfg(guild_id, "ai_instructions", ""),
+        "quota": int(get_cfg(guild_id, "ai_quota", "0")),  # AI calls per hour, 0=unlimited
     }
+
+
+def list_ollama_models(endpoint: str) -> list:
+    """Ask an Ollama host for the models it has (used by the selector)."""
+    try:
+        req = urllib.request.Request(f"{endpoint}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        return []
+
+
+def quota_ok(guild_id, quota: int) -> bool:
+    """True if the guild has quota left this hour (quota 0 = unlimited)."""
+    if not quota:
+        return True
+    bucket = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H")
+    conn = db()
+    row = conn.execute(
+        "SELECT calls FROM usage WHERE guild_id=? AND bucket=?",
+        (str(guild_id), bucket),
+    ).fetchone()
+    calls = row["calls"] if row else 0
+    conn.close()
+    return calls < quota
+
+
+def quota_tick(guild_id):
+    bucket = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H")
+    conn = db()
+    conn.execute(
+        """INSERT INTO usage (guild_id, bucket, calls) VALUES (?, ?, 1)
+           ON CONFLICT(guild_id, bucket) DO UPDATE SET calls = calls + 1""",
+        (str(guild_id), bucket),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +250,11 @@ class MemoryBank:
 memory = MemoryBank()
 
 
-def build_prompt(persona, context, question):
-    lines = [persona, "", "Recent conversation:"]
+def build_prompt(persona, context, question, instructions=""):
+    lines = [persona]
+    if instructions:
+        lines += ["", "SERVER INSTRUCTIONS (follow these, they override the above):", instructions]
+    lines += ["", "Recent conversation:"]
     for role, text in context[-6:]:
         speaker = "member" if role == "user" else "you"
         lines.append(f"{speaker}: {text}")
@@ -485,9 +537,19 @@ async def eightball(interaction: discord.Interaction, question: str):
 AI_GROUP = app_commands.Group(name="ai", description="AI settings (admins only)")
 
 
-@AI_GROUP.command(name="model", description="Which model to use (or 'default').")
-@app_commands.describe(model="Model name, e.g. qwen2.5:1.5b, or 'default'")
-async def ai_model(interaction: discord.Interaction, model: str):
+async def ai_model_autocomplete(interaction: discord.Interaction, current: str):
+    endpoint = guild_ai_config(interaction.guild.id)["endpoint"]
+    models = await asyncio.to_thread(list_ollama_models, endpoint)
+    models = [m for m in models if current.lower() in m.lower()][:20]
+    if not models:
+        return [app_commands.Choice(name=f"default ({OLLAMA_MODEL})", value="default")]
+    return [app_commands.Choice(name=m, value=m) for m in models]
+
+
+@AI_GROUP.command(name="model", description="Choose an AI model (default = host's model).")
+@app_commands.describe(model="Pick from models on your configured AI host, or 'default'")
+@app_commands.autocomplete(model=ai_model_autocomplete)
+async def ai_model_selector(interaction: discord.Interaction, model: str):
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
@@ -497,34 +559,6 @@ async def ai_model(interaction: discord.Interaction, model: str):
         return
     set_cfg(interaction.guild.id, "ai_model", model)
     await interaction.response.send_message(f"AI model → **{model}** on this server.")
-
-
-@AI_GROUP.command(name="endpoint", description="Point at your own AI host (or 'default').")
-@app_commands.describe(url="Your Ollama URL, e.g. http://192.168.1.50:11434, or 'default'")
-async def ai_endpoint(interaction: discord.Interaction, url: str):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    if url.lower() in ("default", "reset", "off"):
-        set_cfg(interaction.guild.id, "ai_endpoint", "")
-        await interaction.response.send_message("AI endpoint reset to the host default.")
-        return
-    if not re.match(r"^https?://", url):
-        await interaction.response.send_message("Must start with http:// or https://.", ephemeral=True)
-        return
-    set_cfg(interaction.guild.id, "ai_endpoint", url)
-    await interaction.response.send_message(f"AI endpoint → **{url}** on this server.")
-
-
-@AI_GROUP.command(name="memory", description="How many turns this server's chats remember.")
-@app_commands.describe(turns="1-12 (default 4). Lower = faster on weak hosts.")
-async def ai_memory(interaction: discord.Interaction, turns: int):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    turns = max(1, min(turns, 12))
-    set_cfg(interaction.guild.id, "ai_memory", str(turns))
-    await interaction.response.send_message(f"This server remembers **{turns}** turns per channel.")
 
 
 @AI_GROUP.command(name="toggle", description="Enable or disable AI chat on this server.")
@@ -545,7 +579,8 @@ async def ai_status(interaction: discord.Interaction):
         f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
         f"Model: `{cfg['model']}`\n"
         f"Endpoint: `{cfg['endpoint']}`\n"
-        f"Memory: {cfg['memory']} turns/channel",
+        f"Memory: {cfg['memory']} turns/channel\n"
+        f"Quota: {cfg['quota']}/hr {'(unlimited)' if not cfg['quota'] else ''}",
         ephemeral=True,
     )
 
@@ -564,11 +599,17 @@ async def ask(interaction: discord.Interaction, prompt: str):
     if not cfg["enabled"]:
         await interaction.response.send_message("AI chat is disabled here.", ephemeral=True)
         return
+    if not quota_ok(interaction.guild.id, cfg["quota"]):
+        await interaction.response.send_message(
+            "⚠️ This server has hit its AI quota for this hour (set in the dashboard).",
+            ephemeral=True,
+        )
+        return
     await interaction.response.defer(thinking=True)
     interaction._q_prompt = prompt
 
     context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
-    full_prompt = build_prompt(PERSONA, context, prompt)
+    full_prompt = build_prompt(PERSONA, context, prompt, cfg["instructions"])
 
     async def factory():
         return await ask_ollama(cfg["endpoint"], cfg["model"], full_prompt)
@@ -590,9 +631,25 @@ async def ask(interaction: discord.Interaction, prompt: str):
     except asyncio.CancelledError:
         raise
 
+    quota_tick(interaction.guild.id)
     _remember_reply(interaction, answer)
     await interaction.followup.send("*(thinking...)*", ephemeral=True)
     await human_type(interaction.channel, answer)
+
+
+PANEL_URL = os.environ.get("PANEL_URL", "https://admin.quaestio.online")
+
+
+@bot.tree.command(name="panel", description="Open this server's web settings panel.")
+async def panel(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "🛠️ **Quaestio web panel**\n"
+        f"⚙️ Settings: {PANEL_URL}\n"
+        "Sign in with Discord **as an admin of this server** to change AI settings, "
+        "custom instructions, welcomes, and more.\n"
+        "Settings you see in Discord stay here too — the panel is just easier.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="summarize", description="Summarize the last N messages in this channel.")
@@ -618,6 +675,8 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         "Summarize these Discord messages in a few short bullets. Keep it neutral "
         "and concise.\n\n" + "\n".join(reversed(texts))
     )
+    if cfg["instructions"]:
+        prompt += "\n\nFollow these server instructions where relevant:\n" + cfg["instructions"]
 
     async def factory():
         return await ask_ollama(cfg["endpoint"], cfg["model"], prompt)
@@ -684,24 +743,6 @@ async def top(interaction: discord.Interaction):
         name = member.display_name if member else f"<@{row['user_id']}>"
         lines.append(f"**{i}.** {name} — {row['messages']} msgs (Lv{level_for_messages(row['messages'])})")
     await interaction.response.send_message("🏆 **Server leaderboard**\n" + "\n".join(lines))
-
-
-@bot.tree.command(name="levelrole", description="Auto-assign a role at every level up.")
-@app_commands.describe(role="Role to give on level up, or 'none' to disable")
-async def levelrole(interaction: discord.Interaction, role: str):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    if role.lower() in ("none", "off", "remove"):
-        set_cfg(interaction.guild.id, "levelrole", "")
-        await interaction.response.send_message("Level-up role disabled.")
-        return
-    resolved = discord.utils.get(interaction.guild.roles, name=role)
-    if not resolved:
-        await interaction.response.send_message(f"Role `{role}` not found.", ephemeral=True)
-        return
-    set_cfg(interaction.guild.id, "levelrole", str(resolved.id))
-    await interaction.response.send_message(f"Level-ups now grant **{resolved.name}**.")
 
 
 # ---------------------------------------------------------------------------
@@ -773,17 +814,6 @@ async def delwarns(interaction: discord.Interaction, member: discord.Member):
     conn.commit()
     conn.close()
     await interaction.response.send_message(f"Cleared warnings for {member.mention}.")
-
-
-@bot.tree.command(name="warnlimit", description="Set the auto-kick warn limit.")
-@app_commands.describe(limit="Warnings before auto-kick")
-async def warnlimit(interaction: discord.Interaction, limit: int):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    limit = max(1, min(limit, 20))
-    set_cfg(interaction.guild.id, "warnlimit", str(limit))
-    await interaction.response.send_message(f"Auto-kick limit set to **{limit}** warns.")
 
 
 @bot.tree.command(name="kick", description="Kick a member.")
@@ -947,36 +977,6 @@ async def tags(interaction: discord.Interaction):
 # ---------------------------------------------------------------------------
 # Welcome
 # ---------------------------------------------------------------------------
-
-@bot.tree.command(name="welcome", description="Turn welcome messages on/off.")
-@app_commands.describe(enabled="true or false")
-async def welcome(interaction: discord.Interaction, enabled: bool):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    set_cfg(interaction.guild.id, "welcome_enabled", "1" if enabled else "0")
-    await interaction.response.send_message(f"Welcome messages {'enabled' if enabled else 'disabled'}.")
-
-
-@bot.tree.command(name="welcomechannel", description="Set the welcome channel.")
-@app_commands.describe(channel="Channel to send welcomes to")
-async def welcomechannel(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    set_cfg(interaction.guild.id, "welcome_channel", str(channel.id))
-    await interaction.response.send_message(f"👋 Welcomes → {channel.mention}")
-
-
-@bot.tree.command(name="welcomemessage", description="Set the welcome text.")
-@app_commands.describe(text="Welcome message (use {member} for the person)")
-async def welcomemessage(interaction: discord.Interaction, text: str):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
-        return
-    set_cfg(interaction.guild.id, "welcome_message", text)
-    await interaction.response.send_message("Welcome text set.")
-
 
 # ---------------------------------------------------------------------------
 # Run
