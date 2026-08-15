@@ -7,16 +7,16 @@
   const termBody = document.getElementById("terminalBody");
   if (termBody) {
     const script = [
+      { p: "Nova", cmd: " @Quaestio how does XP work?", out: null },
+      { p: "Q", cmd: "", out: '▸ "Chat and you earn XP — past messages count, and reward roles unlock as you level. Want the top chatters?"' },
+      { p: "Nova", cmd: " sure, who's winning?", out: null },
+      { p: "Q", cmd: "", out: "▸ Ranking now: <b>1.</b> Nova · <b>2.</b> Kai · <b>3.</b> Mara — <code>/leaderboard</code> shows it live." },
       { p: "$", cmd: " /ask \"who are you?\"", out: null },
       { p: "Q", cmd: "", out: '▸ "I\'m <b>Quaestio</b> — your server\'s own local AI. No cloud, no paywall. Ask me anything."' },
       { p: "$", cmd: " /rank @nova", out: null },
       { p: "Q", cmd: "", out: "▸ <b>Nova</b> is level <b>12</b> · 2,340 XP · next level in 160 XP" },
-      { p: "$", cmd: " /welcomechannel #welcome", out: null },
-      { p: "Q", cmd: "", out: '<span class="t-ok">✓</span> Welcome messages will now post in <b>#welcome</b>' },
       { p: "$", cmd: " /warn @spammer breaking rule 3", out: null },
       { p: "Q", cmd: "", out: '<span class="t-ok">✓</span> <b>@spammer</b> warned · 2/3 warns (auto-kick at 3)' },
-      { p: "$", cmd: " /ask how should I structure a #resources channel?", out: null },
-      { p: "Q", cmd: "", out: "▸ \"Pin the quick links first, then group by topic — and let members add tags so the channel stays tidy.\"" },
     ];
 
     const line = (p, cmd, out) => {

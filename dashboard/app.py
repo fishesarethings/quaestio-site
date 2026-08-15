@@ -13,20 +13,21 @@ Env:
   QUAESTIO_KEY_FILE                           same keyfile as the bot
 """
 
+import datetime
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import sys
+import time
 import urllib.parse
 import urllib.request
 
 import httpx
-from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.sessions import SessionMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/bot")
 import config as qconfig  # noqa: E402
@@ -35,28 +36,31 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE, "..", "bot", "quaestio.db"))
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
+# Only these models show up in the AI model picker. Everything else on a box
+# (phi, gemma, future pulls, …) stays hidden so members see a curated menu.
+ALLOWED_MODELS = ["qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b"]
+
 CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
 REDIRECT_URI = os.environ.get(
     "DISCORD_REDIRECT_URI", "https://admin.quaestio.online/auth/callback"
 )
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 SCOPES = "identify guilds"
 
 API = "https://discord.com/api/v10"
 OAUTH_AUTH = "https://discord.com/oauth2/authorize"
 ADMIN_BITS = 1 << 3  # ADMINISTRATOR
+INVITE_PERMS = "1101994781766"  # same permission set the bot uses everywhere
+
+HOST_ADMIN_IDS = {i.strip() for i in os.environ.get("HOST_ADMIN_IDS", "").split(",") if i.strip()}
 
 app = FastAPI(title="Quaestio admin")
-_secret = os.environ.get("SECRET_KEY", "")
-if not _secret:
-    _secret = Fernet.generate_key().decode()
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=_secret,
-    same_site="lax",
-    https_only=True,
-)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE, "static")), name="static")
+
+# Login sessions keyed by a random bearer token (no cookies — Safari-safe OAuth).
+# In-memory: a dashboard restart signs everyone out, which is fine for a panel.
+SESSIONS = {}
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +146,12 @@ async def exchange_code(code: str) -> dict:
 
 
 def session_user(request: Request) -> dict:
-    u = request.session.get("user")
-    if not u:
-        raise HTTPException(401, "Not signed in")
-    return u
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        data = SESSIONS.get(auth[7:].strip())
+        if data:
+            return data
+    raise HTTPException(401, "Not signed in")
 
 
 def admin_guilds(user: dict) -> list:
@@ -154,6 +160,87 @@ def admin_guilds(user: dict) -> list:
         for g in user.get("guilds", [])
         if g.get("owner") or (int(g.get("permissions", 0)) & ADMIN_BITS)
     ]
+
+
+def require_admin_guild(request: Request, guild_id: int) -> dict:
+    """The caller must be an admin of the given Discord server."""
+    data = session_user(request)
+    g = next(
+        (x for x in data.get("guilds", []) if str(x.get("id")) == str(guild_id)),
+        None,
+    )
+    if not g or not (g.get("owner") or int(g.get("permissions", 0)) & ADMIN_BITS):
+        raise HTTPException(403, "Admin of this server required")
+    return data
+
+
+_bot_guild_ids: set | None = None
+_bot_guilds_at = 0.0
+
+
+async def bot_guild_ids() -> set:
+    """IDs of guilds the bot is currently in (cached 60s)."""
+    global _bot_guild_ids, _bot_guilds_at
+    now = time.time()
+    if _bot_guild_ids is not None and now - _bot_guilds_at < 60:
+        return _bot_guild_ids
+    ids = set()
+    if BOT_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{API}/users/@me/guilds",
+                    headers={"Authorization": f"Bot {BOT_TOKEN}"},
+                )
+            if r.status_code == 200:
+                ids = {str(g["id"]) for g in r.json()}
+        except Exception:
+            pass
+    _bot_guild_ids = ids
+    _bot_guilds_at = now
+    return ids
+
+
+def invite_url(guild_id) -> str:
+    return (
+        f"{OAUTH_AUTH}?client_id={CLIENT_ID}&permissions={INVITE_PERMS}"
+        f"&scope=bot%20applications.commands&guild_id={guild_id}"
+    )
+
+
+_app_owner_id = None
+_app_owner_at = 0.0
+
+
+async def _application_owner_id() -> str:
+    """Discord app owner (usually the host operator). Cached 1h."""
+    global _app_owner_id, _app_owner_at
+    now = time.time()
+    if _app_owner_id is not None and now - _app_owner_at < 3600:
+        return _app_owner_id
+    owner = ""
+    if BOT_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{API}/oauth2/applications/@me",
+                    headers={"Authorization": f"Bot {BOT_TOKEN}"},
+                )
+            if r.status_code == 200:
+                owner = str((r.json().get("owner") or {}).get("id", ""))
+        except Exception:
+            pass
+    _app_owner_id = owner
+    _app_owner_at = now
+    return owner
+
+
+async def host_admin_ids() -> set:
+    """Who may see the Host tab / host settings. Explicit list, else app owner."""
+    if HOST_ADMIN_IDS:
+        return HOST_ADMIN_IDS
+    owner = await _application_owner_id()
+    return {owner} if owner else set()
 
 
 @app.get("/auth/login")
@@ -171,16 +258,16 @@ async def auth_callback(request: Request, code: str):
         data = await exchange_code(code)
     except HTTPException:
         return RedirectResponse("/?error=login")
-    if not admin_guilds(data["user"]):
-        request.session.clear()
+    if not data.get("guilds"):
         return RedirectResponse("/?error=needadmin")
-    request.session["user"] = data
-    return RedirectResponse("/")
+    token = secrets.token_urlsafe(32)
+    SESSIONS[token] = data
+    return RedirectResponse(f"/#token={token}")
 
 
 @app.get("/auth/logout")
-async def auth_logout(request: Request):
-    request.session.clear()
+async def auth_logout(request: Request, token: str = ""):
+    SESSIONS.pop(token, None)
     return RedirectResponse("/")
 
 
@@ -190,8 +277,26 @@ async def auth_logout(request: Request):
 
 @app.get("/api/me")
 async def api_me(request: Request):
-    user = session_user(request)
-    return {"user": user["user"], "guilds": admin_guilds(user)}
+    data = session_user(request)
+    user = data["user"]
+    admins = await host_admin_ids()
+    is_host_admin = str(user.get("id")) in admins
+    bots = await bot_guild_ids()
+    guilds = []
+    for g in data.get("guilds", []):
+        gid = str(g.get("id"))
+        can_manage = bool(g.get("owner")) or bool(int(g.get("permissions", 0)) & ADMIN_BITS)
+        present = gid in bots
+        guilds.append({
+            "id": gid,
+            "name": g.get("name"),
+            "icon": g.get("icon"),
+            "owner": bool(g.get("owner")),
+            "can_manage": can_manage,
+            "bot_present": present,
+            "invite_url": invite_url(gid) if not present else "",
+        })
+    return {"user": user, "guilds": guilds, "is_host_admin": is_host_admin}
 
 
 HOST_ID = "host"
@@ -202,47 +307,266 @@ def host_default(key, default=None):
 
 
 def model_fallback(guild_id):
-    return get_cfg(guild_id, "ai_endpoint", host_default("ai_endpoint", OLLAMA_BASE_URL))
+    """Endpoint used to scan models: always the host's in managed mode."""
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    if managed:
+        return get_cfg("host", "ai_endpoint", OLLAMA_BASE_URL)
+    return get_cfg(guild_id, "ai_endpoint", OLLAMA_BASE_URL)
+
+
+# ---------------------------------------------------------------------------
+# Channel / role references (so the panel shows names, not bare IDs)
+# ---------------------------------------------------------------------------
+
+REF_CACHE = {}
+REF_CACHE_AT = {}
+
+
+async def guild_refs(guild_id: str) -> dict:
+    """Text channels + assignable roles for the name pickers (bot token, cached)."""
+    now = time.time()
+    cached = REF_CACHE.get(guild_id)
+    if cached and now - REF_CACHE_AT.get(guild_id, 0) < 90:
+        return cached
+    out = {"channels": [], "roles": []}
+    if BOT_TOKEN:
+        async with httpx.AsyncClient(timeout=10) as client:
+            headers = {"Authorization": f"Bot {BOT_TOKEN}"}
+            try:
+                r = await client.get(f"{API}/guilds/{guild_id}/channels", headers=headers)
+                if r.status_code == 200:
+                    chans = sorted(
+                        (
+                            c for c in r.json()
+                            if c.get("type") in (0, 5, 15) and c.get("name")
+                        ),
+                        key=lambda c: (c.get("position", 0), c.get("name", "")),
+                    )
+                    out["channels"] = [
+                        {"id": str(c["id"]), "name": c["name"]} for c in chans
+                    ]
+            except Exception:
+                pass
+            try:
+                r = await client.get(f"{API}/guilds/{guild_id}/roles", headers=headers)
+                if r.status_code == 200:
+                    roles = [
+                        rt for rt in r.json()
+                        if str(rt.get("id")) != str(guild_id) and not rt.get("managed")
+                    ]
+                    roles.sort(key=lambda rt: rt.get("position", 0), reverse=True)
+                    out["roles"] = [
+                        {"id": str(rt["id"]), "name": rt["name"]} for rt in roles
+                    ]
+            except Exception:
+                pass
+    REF_CACHE[guild_id] = out
+    REF_CACHE_AT[guild_id] = now
+    return out
+
+
+@app.get("/api/guilds/{guild_id}/refs")
+async def api_refs(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    return await guild_refs(str(guild_id))
 
 
 @app.get("/api/guilds/{guild_id}/models")
 async def api_models(request: Request, guild_id: int):
     session_user(request)
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
     endpoint = model_fallback(guild_id)
     try:
         with urllib.request.urlopen(f"{endpoint}/api/tags", timeout=6) as resp:
             data = json.loads(resp.read().decode())
-        names = [m["name"] for m in data.get("models", []) if m.get("name")]
-        return {"endpoint": endpoint, "models": names}
+        names = [m["name"] for m in data.get("models", []) if m.get("name") and m["name"] in ALLOWED_MODELS]
+        return {"endpoint": "" if managed else endpoint, "models": names}
     except Exception as exc:
-        return JSONResponse({"endpoint": endpoint, "models": [], "error": str(exc)})
+        return JSONResponse({"endpoint": "" if managed else endpoint, "models": [], "error": str(exc)})
+
+
+SETTING_KEYS = [
+    "ai_enabled", "ai_model", "ai_endpoint", "ai_memory", "ai_instructions",
+    "ai_quota", "ai_channels", "ai_mention", "ai_temperature", "ai_max_tokens",
+    "ai_source", "ai_contribute", "ai_window", "ai_personality",
+    "ai_conv", "ai_conv_minutes",
+    "welcome_enabled", "welcome_channel", "welcome_message",
+    "welcome_role", "levelrole", "level_announce", "xp_enabled", "warnlimit",
+    "birthday_enabled", "birthday_channel",
+]
+
+
+def usage_bucket(window: int) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if window <= 1:
+        return now.strftime("%Y%m%d%H")
+    if window <= 6:
+        return now.strftime("%Y%m%d") + str(now.hour // 6)
+    return now.strftime("%Y%m%d")
+
+
+def usage_calls(guild_id, window: int = 6) -> int:
+    """AI calls already used in the current quota window (0 if none)."""
+    bucket = usage_bucket(window)
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT calls FROM usage WHERE guild_id=? AND bucket=?",
+            (str(guild_id), bucket),
+        ).fetchone()
+        return row["calls"] if row else 0
+    finally:
+        conn.close()
+
+
+def effective_ai_limits(guild_id):
+    """Effective quota/memory/endpoint after host caps — mirrors the bot's merge."""
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    source = (get_cfg(guild_id, "ai_source", "shared") or "shared").strip().lower()
+    window = max(1, int(get_cfg(guild_id, "ai_window", "6") or 6))
+    host_mem_raw = get_cfg("host", "ai_memory", "")
+    host_quota_raw = get_cfg("host", "ai_quota", "")
+    host_mem = int(host_mem_raw) if str(host_mem_raw).strip() else 0
+    host_quota = int(host_quota_raw) if str(host_quota_raw).strip() else 0
+    mem_raw = get_cfg(guild_id, "ai_memory", "")
+    quota_raw = get_cfg(guild_id, "ai_quota", "")
+    memory = int(mem_raw) if str(mem_raw).strip() else (host_mem or 4)
+    quota = int(quota_raw) if str(quota_raw).strip() else host_quota
+    if source == "self":
+        endpoint = (get_cfg(guild_id, "ai_endpoint", "") or "http://127.0.0.1:11434").strip()
+    else:
+        endpoint = ""  # shared host box is hidden from server admins
+        if managed:
+            if host_mem:
+                memory = min(memory, host_mem)
+            if host_quota:
+                quota = min(quota, host_quota)
+    return {"memory": memory, "quota": quota, "managed": managed, "window": window,
+            "source": source, "endpoint": endpoint,
+            "host_memory": host_mem, "host_quota": host_quota}
 
 
 @app.get("/api/guilds/{guild_id}/settings")
 async def api_get_settings(request: Request, guild_id: int):
     session_user(request)
-    keys = [
-        "ai_enabled", "ai_model", "ai_endpoint", "ai_memory", "ai_instructions",
-        "ai_quota", "welcome_enabled", "welcome_channel", "welcome_message",
-        "levelrole", "warnlimit",
+    settings = {k: get_cfg(guild_id, k, "") for k in SETTING_KEYS}
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    settings["host_mode"] = "managed" if managed else "decentral"
+    settings["host_memory"] = get_cfg("host", "ai_memory", "")
+    settings["host_quota"] = get_cfg("host", "ai_quota", "")
+    settings["host_model"] = get_cfg("host", "ai_model", "")
+    # Never reveal the host's private AI box URL to server admins.
+    settings["host_endpoint"] = ""
+    limits = effective_ai_limits(guild_id)
+    settings["ai_source"] = limits["source"]
+    settings["ai_window"] = str(limits["window"])
+    settings["quota_effective"] = limits["quota"]
+    settings["memory_effective"] = limits["memory"]
+    settings["usage_now"] = usage_calls(guild_id, limits["window"])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    w = limits["window"]
+    if w <= 1:
+        mins = 60 - now.minute
+    elif w <= 6:
+        mins = (6 - now.hour % 6) * 60 - now.minute
+    else:
+        mins = (24 - now.hour) * 60 - now.minute
+    settings["reset_minutes"] = mins
+    conn = db()
+    rows = conn.execute(
+        "SELECT channel_id, role, text, at FROM memory WHERE guild_id=? ORDER BY rowid DESC LIMIT 30",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    settings["memory"] = [
+        {"channel_id": r["channel_id"], "role": r["role"], "text": r["text"], "at": r["at"]}
+        for r in rows
     ]
-    return {k: get_cfg(guild_id, k, "") for k in keys}
+    conn = db()
+    bdays = conn.execute(
+        "SELECT user_id, month, day FROM birthdays WHERE guild_id=? ORDER BY month, day",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    settings["birthdays"] = [
+        {"user_id": r["user_id"], "month": r["month"], "day": r["day"]} for r in bdays
+    ]
+    return settings
 
 
-SENSITIVE = {"ai_instructions", "ai_endpoint", "welcome_message", "tag_editor"}
+@app.post("/api/guilds/{guild_id}/memory/clear")
+async def api_clear_memory(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    conn = db()
+    conn.execute("DELETE FROM memory WHERE guild_id=?", (str(guild_id),))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/guilds/{guild_id}/leaderboard")
+async def api_leaderboard(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, messages FROM xp WHERE guild_id=? ORDER BY messages DESC LIMIT 5",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    names = {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{API}/guilds/{guild_id}/members?limit=1000",
+                headers={"Authorization": f"Bot {BOT_TOKEN}"},
+            )
+            if r.status_code == 200:
+                for m in r.json():
+                    uid = str(m.get("user", {}).get("id"))
+                    nick = m.get("nick")
+                    user = m.get("user", {})
+                    names[uid] = nick or user.get("global_name") or user.get("username") or uid
+    except Exception:
+        pass
+    return {
+        "members": [
+            {"id": r["user_id"], "messages": r["messages"],
+             "name": names.get(str(r["user_id"]), f"<@{r['user_id']}>")}
+            for r in rows
+        ]
+    }
+
+
+@app.get("/api/host/pool")
+async def api_host_pool(request: Request):
+    await require_host_admin(request)
+    conn = db()
+    rows = conn.execute(
+        "SELECT guild_id, value FROM config WHERE key='ai_contribute'"
+    ).fetchall()
+    contribute = {
+        r["guild_id"] for r in rows
+        if str(r["value"]).strip().lower() not in ("", "0", "false", "none")
+    }
+    out = []
+    for gid in sorted(contribute):
+        out.append({
+            "guild_id": gid,
+            "endpoint": get_cfg(gid, "ai_endpoint", ""),
+            "model": get_cfg(gid, "ai_model", ""),
+            "window": get_cfg(gid, "ai_window", "6"),
+            "name": gid,
+        })
+    conn.close()
+    return {"contributors": out}
 
 
 @app.post("/api/guilds/{guild_id}/settings")
 async def api_set_settings(request: Request, guild_id: int):
     session_user(request)
     body = await request.json()
-    allowed = {
-        "ai_enabled", "ai_model", "ai_endpoint", "ai_memory", "ai_instructions",
-        "ai_quota", "welcome_enabled", "welcome_channel", "welcome_message",
-        "levelrole", "warnlimit",
-    }
     for key, value in body.items():
-        if key in allowed and value is not None:
+        if key in SETTING_KEYS and value is not None:
             set_cfg(guild_id, key, value)
     return {"ok": True}
 
@@ -251,18 +575,25 @@ async def api_set_settings(request: Request, guild_id: int):
 # Host / self-host settings (applied as defaults by the bot)
 # ---------------------------------------------------------------------------
 
-HOST_KEYS = ["ai_endpoint", "ai_model", "ai_memory", "ai_quota"]
+HOST_KEYS = ["host_mode", "ai_endpoint", "ai_model", "ai_memory", "ai_quota", "ai_dm"]
+
+
+async def require_host_admin(request: Request) -> dict:
+    data = session_user(request)
+    if str(data["user"].get("id")) not in await host_admin_ids():
+        raise HTTPException(403, "Host settings are only for the host operator")
+    return data
 
 
 @app.get("/api/host/settings")
 async def api_get_host(request: Request):
-    session_user(request)
+    await require_host_admin(request)
     return {k: get_cfg(HOST_ID, k, "") for k in HOST_KEYS}
 
 
 @app.post("/api/host/settings")
 async def api_set_host(request: Request):
-    session_user(request)
+    await require_host_admin(request)
     body = await request.json()
     for key, value in body.items():
         if key in HOST_KEYS and value is not None:
@@ -272,7 +603,7 @@ async def api_set_host(request: Request):
 
 @app.get("/api/host/stats")
 async def api_host_stats(request: Request):
-    session_user(request)
+    await require_host_admin(request)
     stats = {"ollama": False, "models": []}
     try:
         with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=6) as resp:

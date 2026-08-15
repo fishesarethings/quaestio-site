@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
 
@@ -50,66 +50,272 @@
       <h2>Your servers</h2>
       <p>Pick a server to manage its AI, welcomes, levels and moderation.</p>
     </div>
-    <div id="guild-list" class="guild-grid"></div>
+    <div class="search-wrap">
+      <input type="search" id="guild-search" placeholder="Search your servers…" autocomplete="off">
+    </div>
+    <div id="guild-list"></div>
   </section>
 
   <!-- Settings -->
   <section id="settings-view" class="hidden">
     <div class="crumb">
       <a href="#" id="back-btn">← All servers</a>
-      <h2 id="settings-guild-name"></h2>
+      <div class="crumb-name">
+        <h2 id="settings-guild-name"></h2>
+        <span class="pill" id="guild-status"></span>
+      </div>
     </div>
 
-    <div class="tabs" id="tabs">
-      <button class="tab active" data-tab="ai">🤖 AI</button>
-      <button class="tab" data-tab="welcome">👋 Welcome</button>
-      <button class="tab" data-tab="levels">🏆 Levels</button>
-      <button class="tab" data-tab="moderation">🛡️ Moderation</button>
+    <div class="tabs" id="tabs" role="tablist">
+      <button class="tab active" data-tab="ai" role="tab" aria-selected="true">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        AI
+      </button>
+      <button class="tab" data-tab="welcome" role="tab">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+        Welcome
+      </button>
+      <button class="tab" data-tab="levels" role="tab">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        Levels
+      </button>
+      <button class="tab" data-tab="moderation" role="tab">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Moderation
+      </button>
     </div>
 
     <!-- AI -->
     <div class="tab-panel active" id="panel-ai">
+      <div class="panel-intro">
+        <span class="panel-icon">
+          <svg class="ico big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        </span>
+        <div>
+          <h3>AI chat</h3>
+          <p>Let members chat with an Ollama model right in your server — private, self-hosted and rate-limited to keep weak boxes responsive.</p>
+        </div>
+      </div>
+
       <div class="card">
         <div class="switch-row">
-          <div>
-            <h3>AI chat</h3>
-            <p class="muted">Allow members to talk to the AI on this server.</p>
+          <div class="switch-copy">
+            <h3>Enable AI chat</h3>
+            <p class="muted">Turns the <code>/ask</code> command on or off for the whole server.</p>
           </div>
           <label class="switch"><input type="checkbox" id="ai_enabled"><span></span></label>
         </div>
       </div>
 
       <div class="card">
-        <label for="ai_endpoint">AI host (Ollama)</label>
-        <div class="input-wrap">
-          <input type="text" id="ai_endpoint" placeholder="http://127.0.0.1:11434" autocomplete="off">
-          <button id="refresh-models" class="btn btn-ghost" title="Scan models on this host">↻</button>
-        </div>
-        <p class="hint">Self-host your own model box and point at it here, or leave blank for the host default.</p>
-
-        <label for="ai_model">Model</label>
-        <select id="ai_model" class="model-select"></select>
-        <p id="model-scan-status" class="hint"></p>
-
-        <div class="grid-2">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+          </span>
           <div>
-            <label for="ai_memory">Memory (turns / channel)</label>
-            <input type="number" id="ai_memory" min="1" max="12">
+            <h3>Model &amp; host</h3>
+            <p>Which AI this server talks to, and how much of the conversation it remembers.</p>
           </div>
-          <div>
-            <label for="ai_quota">AI calls per hour <span class="muted-2">(0 = unlimited)</span></label>
-            <input type="number" id="ai_quota" min="0">
+        </div>
+
+        <div class="field-group">
+          <label for="ai_source">AI box</label>
+          <select id="ai_source" class="model-select">
+            <option value="shared">Shared Quaestio box (recommended)</option>
+            <option value="self">My own box (self-hosted)</option>
+          </select>
+          <p class="hint" id="source-hint">The shared box is fast and always on. Pick <b>My own box</b> to self-host — you then point it at your own Ollama, and can join the community pool.</p>
+        </div>
+
+        <div class="field-group">
+          <div class="field-top">
+            <label for="ai_endpoint">AI host (Ollama)</label>
+            <span class="pill" id="endpoint-badge">shared box</span>
+          </div>
+          <div class="input-wrap">
+            <input type="text" id="ai_endpoint" placeholder="Shared box (hidden)" autocomplete="off" disabled>
+            <button id="refresh-models" class="btn btn-ghost icon-btn" title="Rescan models on this host" aria-label="Rescan models">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+          <p class="hint" id="endpoint-hint">Where the AI runs. Point at your own model box, or leave blank for the host default.</p>
+        </div>
+
+        <div class="field-group" id="contribute-wrap" hidden>
+          <div class="switch-row level-row">
+            <div class="switch-copy">
+              <h3>Join the community pool</h3>
+              <p class="muted">Share this box's models so other Quaestio servers can use them. You stay in control — the host sees you as a trusted contributor.</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="ai_contribute"><span></span></label>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="ai_model">Model</label>
+          <select id="ai_model" class="model-select"></select>
+          <p id="model-scan-status" class="hint"></p>
+        </div>
+
+        <div class="field-group">
+          <label for="ai_personality">Personality</label>
+          <select id="ai_personality" class="model-select">
+            <option value="friendly">Friendly</option>
+            <option value="sage">Wise sage</option>
+            <option value="sarcastic">Sarcastic wit</option>
+            <option value="pirate">Pirate</option>
+            <option value="professional">Professional</option>
+          </select>
+          <p class="hint">A flavor for how the AI talks. Server instructions still override it.</p>
+        </div>
+
+        <div class="grid-2 fields-row">
+          <div class="field-group">
+            <label for="ai_memory">Memory</label>
+            <div class="unit-input">
+              <input type="number" id="ai_memory" min="1" max="12" placeholder="6">
+              <span class="unit">messages / channel</span>
+            </div>
+            <p class="hint" id="memory-hint"></p>
+          </div>
+          <div class="field-group">
+            <label for="ai_quota">Rate limit</label>
+            <div class="unit-input">
+              <input type="number" id="ai_quota" min="0" placeholder="0">
+              <select id="ai_window" class="model-select unit">
+                <option value="1">per hour</option>
+                <option value="6">per 6 hours</option>
+                <option value="24">per day</option>
+              </select>
+            </div>
+            <p class="hint" id="quota-hint">0 = unlimited. Caps how many AI calls this server gets in each window.</p>
           </div>
         </div>
       </div>
 
       <div class="card">
-        <label for="ai_instructions">Custom instructions</label>
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </span>
+          <div>
+            <h3>Where &amp; when it replies</h3>
+            <p>Which channels the AI works in, and how it responds.</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label>Allowed channels</label>
+          <div class="chips" id="ai-channels-chips"></div>
+          <p class="hint" id="ai-channels-note">Tap a channel to allow the AI to chat there. With none selected the AI works <b>everywhere</b>.</p>
+        </div>
+
+        <div class="switch-row level-row">
+          <div class="switch-copy">
+            <h3>Reply when mentioned</h3>
+            <p class="muted">When on, <b>@Quaestio</b> gets a chat reply just by mentioning it — no slash command needed. <code>/ask</code> keeps working too.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="ai_mention"><span></span></label>
+        </div>
+
+        <div class="switch-row level-row">
+          <div class="switch-copy">
+            <h3>Keep chatting without @</h3>
+            <p class="muted">When you <b>@Quaestio</b> first, it joins and chats — afterwards members can just keep typing, no <b>@</b> each time. It goes quiet again after a while with no messages, or right away if someone says <b>go away</b>.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="ai_conv"><span></span></label>
+        </div>
+        <div class="field-group" id="ai-conv-minutes-wrap">
+          <label for="ai_conv_minutes">Stays for</label>
+          <div class="unit-input">
+            <input type="number" id="ai_conv_minutes" min="1" max="60" placeholder="3">
+            <span class="unit">minutes</span>
+          </div>
+          <p class="hint">Inactivity timeout — the bot stops replying this long after the last message.</p>
+        </div>
+
+        <div class="grid-2 fields-row">
+          <div class="field-group">
+            <label for="ai_temperature">Creativity</label>
+            <div class="slider-row">
+              <input type="range" id="ai_temperature" min="0" max="2" step="0.1" value="0.8">
+              <output id="ai_temperature_val">0.8</output>
+            </div>
+            <p class="hint">Lower = factual and consistent. Higher = imaginative and varied replies.</p>
+          </div>
+          <div class="field-group">
+            <label for="ai_max_tokens">Max reply length</label>
+            <div class="unit-input">
+              <input type="number" id="ai_max_tokens" min="50" max="1500" step="50" placeholder="400">
+              <span class="unit">tokens</span>
+            </div>
+            <p class="hint">Cap on how long answers can be. 400 ≈ a short paragraph.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+          </span>
+          <div>
+            <h3>What the bot uses right now</h3>
+            <p>Effective values after host caps and server defaults — this is exactly what reaches the model.</p>
+          </div>
+        </div>
+        <div class="meter-wrap" id="quota-meter" hidden>
+          <div class="meter-head">
+            <span id="quota-label">Loading usage…</span>
+            <span id="quota-reset" class="muted-2"></span>
+          </div>
+          <div class="meter"><div class="meter-fill" id="quota-fill"></div></div>
+        </div>
+        <dl class="summary-list" id="ai-summary"></dl>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </span>
+          <div>
+            <h3>Bot memory</h3>
+            <p>Recent turns the AI remembers per channel on this server. Clear it whenever you like.</p>
+          </div>
+        </div>
+        <div id="memory-view" class="memory-view"><p class="muted">Talking to the bot fills this in live.</p></div>
+        <div class="card-actions">
+          <button id="clear-memory" class="btn btn-ghost">🧹 Clear memory for this server</button>
+          <span id="memory-clear-status" class="save-status"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </span>
+          <div>
+            <h3>Custom instructions</h3>
+            <p>Extra rules the AI follows here — they override its default persona.</p>
+          </div>
+        </div>
+        <div class="field-top">
+          <label for="ai_instructions">System prompt</label>
+          <span class="pill lock">
+            <svg class="ico xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            encrypted
+          </span>
+        </div>
         <textarea id="ai_instructions" rows="7"
           placeholder="e.g. Always answer in short, friendly messages. Never mention you are an AI."></textarea>
-        <p class="hint">Stored <b>encrypted</b>. These guide how the AI behaves on this server and override its default persona.</p>
+        <p class="hint">Stored <b>encrypted</b> on your machine. These guide how the AI behaves on this server and override its default persona.</p>
         <div class="card-actions">
-          <button id="save-ai" class="btn btn-primary">Save AI settings</button>
+          <button id="save-ai" class="btn btn-primary">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save changes
+          </button>
           <span id="save-status-ai" class="save-status"></span>
         </div>
       </div>
@@ -117,52 +323,209 @@
 
     <!-- Welcome -->
     <div class="tab-panel" id="panel-welcome">
+      <div class="panel-intro">
+        <span class="panel-icon">
+          <svg class="ico big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+        </span>
+        <div>
+          <h3>Welcome</h3>
+          <p>Greet new members automatically when they join and hand them a first role.</p>
+        </div>
+      </div>
+
       <div class="card">
         <div class="switch-row">
-          <div>
-            <h3>Welcome messages</h3>
-            <p class="muted">Greet new members automatically.</p>
+          <div class="switch-copy">
+            <h3>Enable welcome messages</h3>
+            <p class="muted">Send the message below every time a new member joins.</p>
           </div>
           <label class="switch"><input type="checkbox" id="welcome_enabled"><span></span></label>
         </div>
       </div>
+
       <div class="card">
-        <label for="welcome_channel">Channel ID</label>
-        <input type="text" id="welcome_channel" placeholder="e.g. 123456789012345678" autocomplete="off">
-        <label for="welcome_message">Message</label>
-        <textarea id="welcome_message" rows="3" placeholder="Welcome {member}! 🎉"></textarea>
-        <p class="hint">Use <code>{member}</code> for the new member's name, <code>{guild}</code> for the server name.</p>
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </span>
+          <div>
+            <h3>Message</h3>
+            <p>Which channel to post in, who gets a role, and what the message says.</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="welcome_channel_ref">Channel</label>
+          <select id="welcome_channel_ref" class="model-select"></select>
+          <input type="text" id="welcome_channel_custom" class="mono input-stack" placeholder="…or paste a channel ID directly" autocomplete="off" hidden>
+          <p class="hint">Pick a channel by its <b>#name</b> above, or switch to <b>Custom ID…</b> and paste one.</p>
+        </div>
+
+        <div class="field-group">
+          <label for="welcome_role_ref">Role to auto-assign on join <span class="muted-2">(optional)</span></label>
+          <select id="welcome_role_ref" class="model-select"></select>
+          <input type="text" id="welcome_role_custom" class="mono input-stack" placeholder="…or paste a role ID directly" autocomplete="off" hidden>
+          <p class="hint">New members get this role automatically. Leave on <b>None</b> to not assign a role.</p>
+        </div>
+
+        <div class="field-group">
+          <label for="welcome_message">Message</label>
+          <textarea id="welcome_message" rows="3" placeholder="Welcome {member}! 🎉"></textarea>
+          <p class="hint">Use <code>{member}</code> for the new member's name, <code>{guild}</code> for the server name.</p>
+        </div>
+
         <div class="preview">
           <p class="preview-title">Live preview</p>
-          <div id="welcome-preview" class="preview-box"></div>
+          <div class="preview-box" id="welcome-preview"></div>
         </div>
+
         <div class="card-actions">
-          <button id="save-welcome" class="btn btn-primary">Save welcome settings</button>
+          <button id="save-welcome" class="btn btn-primary">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save changes
+          </button>
           <span id="save-status-welcome" class="save-status"></span>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 6-6h8a6 6 0 0 1 6 6v1"/><circle cx="19" cy="4" r="3"/></svg>
+          </span>
+          <div>
+            <h3>Birthdays</h3>
+            <p>Wish members a happy birthday automatically. Members register theirs with <code>/birthday set</code>.</p>
+          </div>
+        </div>
+
+        <div class="switch-row">
+          <div class="switch-copy">
+            <h3>Announce birthdays</h3>
+            <p class="muted">Post a <b>🎂 Happy birthday</b> message in a channel each day someone has one. (Checked at 00:00 UTC.)</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="birthday_enabled"><span></span></label>
+        </div>
+
+        <div class="field-group">
+          <label for="birthday_channel">Channel for birthday posts</label>
+          <select id="birthday_channel_ref" class="model-select"></select>
+          <input type="text" id="birthday_channel_custom" class="mono input-stack" placeholder="…or paste a channel ID directly" autocomplete="off" hidden>
+          <p class="hint">Pick a channel to announce in, leave on <b>None</b> to not post.</p>
+        </div>
+
+        <div id="birthday-list" class="birthday-list"></div>
       </div>
     </div>
 
     <!-- Levels -->
     <div class="tab-panel" id="panel-levels">
+      <div class="panel-intro">
+        <span class="panel-icon">
+          <svg class="ico big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        </span>
+        <div>
+          <h3>Levels</h3>
+          <p>Reward activity with XP and roles that unlock as members level up.</p>
+        </div>
+      </div>
+
       <div class="card">
-        <label for="levelrole">Role granted on level-up <span class="muted-2">(role ID, or empty)</span></label>
-        <input type="text" id="levelrole" placeholder="Role ID" autocomplete="off">
-        <p class="hint">XP levels are tracked automatically. Set a role ID to auto-assign it on every level up.</p>
+        <div class="switch-row">
+          <div class="switch-copy">
+            <h3>Track XP</h3>
+            <p class="muted">Members earn XP from every message they send. See ranks with <code>/rank</code> and <code>/top</code>.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="xp_enabled"><span></span></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </span>
+          <div>
+            <h3>Level-ups</h3>
+            <p>What happens when a member levels up.</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="levelrole_ref">Role granted on level-up <span class="muted-2">(optional)</span></label>
+          <select id="levelrole_ref" class="model-select"></select>
+          <input type="text" id="levelrole_custom" class="mono input-stack" placeholder="…or paste a role ID directly" autocomplete="off" hidden>
+          <p class="hint">Auto-assigned each time a member levels up. Leave on <b>None</b> to not grant a role.</p>
+        </div>
+
+        <div class="switch-row level-row">
+          <div class="switch-copy">
+            <h3>Announce level-ups</h3>
+            <p class="muted">Post a <b>🎉 reached level N!</b> message in the channel.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="level_announce"><span></span></label>
+        </div>
+
         <div class="card-actions">
-          <button id="save-levels" class="btn btn-primary">Save level settings</button>
+          <button id="save-levels" class="btn btn-primary">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save changes
+          </button>
           <span id="save-status-levels" class="save-status"></span>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v6a5 5 0 0 1-10 0V4z"/></svg>
+          </span>
+          <div>
+            <h3>Leaderboard</h3>
+            <p>Top members in this server right now. Full board lives in Discord with <code>/leaderboard</code>.</p>
+          </div>
+        </div>
+        <div id="leaderboard" class="leaderboard"></div>
       </div>
     </div>
 
     <!-- Moderation -->
     <div class="tab-panel" id="panel-moderation">
+      <div class="panel-intro">
+        <span class="panel-icon">
+          <svg class="ico big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </span>
+        <div>
+          <h3>Moderation</h3>
+          <p>Keep the peace automatically. Commands like <code>/warn</code>, <code>/kick</code>, <code>/mute</code> and <code>/purge</code> always work — this is a safety net.</p>
+        </div>
+      </div>
+
       <div class="card">
-        <label for="warnlimit">Warnings before auto-kick</label>
-        <input type="number" id="warnlimit" min="1" max="20">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          </span>
+          <div>
+            <h3>Warning limit</h3>
+            <p>Auto-remove members who keep racking up warnings.</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="warnlimit">Warnings before auto-kick</label>
+          <div class="unit-input">
+            <input type="number" id="warnlimit" min="1" max="20" placeholder="5">
+            <span class="unit">warnings</span>
+          </div>
+          <p class="hint">Members are removed after this many warnings. Set to <b>0</b> to disable auto-kick.</p>
+        </div>
+
         <div class="card-actions">
-          <button id="save-moderation" class="btn btn-primary">Save moderation settings</button>
+          <button id="save-moderation" class="btn btn-primary">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save changes
+          </button>
           <span id="save-status-moderation" class="save-status"></span>
         </div>
       </div>
@@ -173,45 +536,141 @@
   <section id="host-view" class="hidden">
     <div class="section-head">
       <h2>Host settings</h2>
-      <p>Defaults applied to every server that doesn't override them. Everything is stored encrypted on this machine.</p>
+      <p>Who runs the AI, and the defaults every server starts from. Everything is stored encrypted on this machine.</p>
     </div>
 
     <div class="card">
-      <h3>Host stats</h3>
+      <div class="card-head">
+        <span class="card-icon">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        </span>
+        <div>
+          <h3>Hosting mode</h3>
+          <p>Who owns the AI model box.</p>
+        </div>
+      </div>
+      <div class="seg" id="host-mode-seg">
+        <button class="seg-btn active" data-mode="managed">
+          <b>Host-managed AI</b>
+          <span>One shared AI box. The host sets the endpoint and hard caps on memory &amp; quota.</span>
+        </button>
+        <button class="seg-btn" data-mode="decentral">
+          <b>Server-owned AI</b>
+          <span>Each server runs its own AI and sets its own memory &amp; quota freely.</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-icon">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15l3.5-3.5"/><path d="M20.3 18a10 10 0 1 0-16.6 0"/></svg>
+        </span>
+        <div>
+          <h3>Host stats</h3>
+          <p class="muted" id="host-stats-sub">Live usage of this machine.</p>
+        </div>
+      </div>
       <div id="host-stats" class="stats-row"></div>
     </div>
 
     <div class="card">
-      <label for="host_endpoint">Default AI host (Ollama URL)</label>
-      <input type="text" id="host_endpoint" placeholder="http://127.0.0.1:11434" autocomplete="off">
-      <label for="host_model">Default model</label>
-      <select id="host_model" class="model-select"></select>
-      <p id="host-model-status" class="hint"></p>
-      <div class="grid-2">
+      <div class="card-head">
+        <span class="card-icon">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+        </span>
         <div>
-          <label for="host_memory">Default memory (turns)</label>
-          <input type="number" id="host_memory" min="1" max="12">
-        </div>
-        <div>
-          <label for="host_quota">Default AI calls / hour</label>
-          <input type="number" id="host_quota" min="0">
+          <h3>Community pool</h3>
+          <p>Servers that self-host an AI box and chose to share it. Their models widen what everyone can use.</p>
         </div>
       </div>
-      <p class="hint">Servers can override these individually. The quota stops one chatty server from hogging a shared host.</p>
+      <div id="pool-list" class="pool-list"><p class="muted">Loading pool…</p></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-icon">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        </span>
+        <div>
+          <h3>Default AI</h3>
+          <p>What every server starts with before its own admins tweak anything.</p>
+        </div>
+      </div>
+      <div class="field-group">
+        <div class="field-top">
+          <label for="host_endpoint">AI host (Ollama URL)</label>
+          <span class="pill" id="host-endpoint-badge"></span>
+        </div>
+        <div class="input-wrap">
+          <input type="text" id="host_endpoint" placeholder="http://127.0.0.1:11434" autocomplete="off">
+        </div>
+      </div>
+      <div class="field-group">
+        <label for="host_model">Model</label>
+        <select id="host_model" class="model-select"></select>
+      </div>
+      <p id="host-model-status" class="hint"></p>
+      <div class="grid-2 fields-row">
+        <div class="field-group">
+          <label for="host_memory" id="host-memory-label">Default memory</label>
+          <div class="unit-input">
+            <input type="number" id="host_memory" min="1" max="12">
+            <span class="unit">messages / channel</span>
+          </div>
+          <p class="hint">How many past messages the AI remembers per channel by default.</p>
+        </div>
+        <div class="field-group">
+          <label for="host_quota" id="host-quota-label">Calls / hour</label>
+          <div class="unit-input">
+            <input type="number" id="host_quota" min="0">
+            <span class="unit">per hour</span>
+          </div>
+          <p class="hint">0 = unlimited. Stops one chatty server hogging a shared host.</p>
+        </div>
+      </div>
+      <p class="hint" id="host-mode-note"></p>
+      <div class="switch-row">
+        <div class="switch-copy">
+          <h3>DM chat</h3>
+          <p class="muted">When on, the bot answers anyone who messages it directly. Uses this host AI box and this hour's quota.</p>
+        </div>
+        <label class="switch"><input type="checkbox" id="host_ai_dm"><span></span></label>
+      </div>
       <div class="card-actions">
-        <button id="save-host" class="btn btn-primary">Save host defaults</button>
+        <button id="save-host" class="btn btn-primary">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Save host settings
+        </button>
         <span id="save-status-host" class="save-status"></span>
       </div>
     </div>
 
     <div class="card">
-      <h3>Self-host on Windows</h3>
-      <p class="muted">The bot and this panel both run on Windows. Open PowerShell and paste:</p>
-      <div class="code-block">
-        <pre><code>powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"</code></pre>
-        <div class="code-bar">Then start with: <b>run-quaestio.bat</b></div>
+      <div class="card-head">
+        <span class="card-icon">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
+        </span>
+        <div>
+          <h3>Self-host Quaestio</h3>
+          <p>The bot + AI install in one command on any platform. Pick yours:</p>
+        </div>
       </div>
-      <p class="muted" style="margin-top:14px">Want the web panel on Windows too?</p>
+      <div class="seg seg-tabs" id="os-seg">
+        <button class="seg-btn active" data-os="macos">macOS</button>
+        <button class="seg-btn" data-os="linux">Linux</button>
+        <button class="seg-btn" data-os="windows">Windows</button>
+      </div>
+
+      <div class="code-block" id="os-cmd">
+        <pre><code>curl -fsSL https://quaestio.online/bot/install.sh | bash</code></pre>
+        <div class="code-bar" id="os-cmd-note">Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Run the web panel too</h3>
+      <p class="muted">Optional — after installing the bot, add the dashboard for the web UI:</p>
       <div class="code-block">
         <pre><code>pip install -r dashboard/requirements.txt
 set DISCORD_CLIENT_ID=...
@@ -224,6 +683,6 @@ uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
 </main>
 
 <div class="toast" id="toast"></div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=10"></script>
 </body>
 </html>

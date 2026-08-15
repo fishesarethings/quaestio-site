@@ -44,7 +44,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # Where Ollama lives. This can be ANOTHER computer on your network, e.g.
 #   OLLAMA_BASE_URL=http://192.168.1.50:11434   (Windows/Linux model host)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
 DB_PATH = os.environ.get("DB_PATH", "quaestio.db")
 PREFIX = os.environ.get("PREFIX", "/")
@@ -62,6 +62,38 @@ PERSONA = (
     "- ask a question back now and then\n"
     "You share one small brain with the whole server, so keep it light."
 )
+
+# Pick a personality on the web panel — a different flavor of the same AI.
+# Each one overrides the friendly persona above (server instructions still win).
+PERSONALITIES = {
+    "friendly": None,  # falls back to PERSONA
+    "sage": (
+        "You are Quaestio, a calm, thoughtful sage on Discord. Be wise and "
+        "measured: reply in 1-4 short sentences, favor nuance and questions "
+        "back, and never mention being an AI, a model, or Ollama."
+    ),
+    "sarcastic": (
+        "You are Quaestio, a witty, dry-witted buddy with a playful sarcastic "
+        "edge. Reply in 1-4 short casual sentences, keep it teasing but never "
+        "mean, and never mention being an AI or a model."
+    ),
+    "pirate": (
+        "Arr! You are Quaestio, a cheerful pirate on Discord. Reply in 1-4 "
+        "short lines full o' nautical cheer (arr, ye, matey), and never "
+        "mention being an AI or a model."
+    ),
+    "professional": (
+        "You are Quaestio, a crisp, professional assistant on Discord. Reply "
+        "in 1-4 short, precise sentences, be helpful and to the point, and "
+        "never mention being an AI or a model."
+    ),
+}
+
+
+def persona_for(name):
+    """Resolve a personality name to its persona prompt (friendly = default)."""
+    key = (name or "friendly").strip().lower()
+    return PERSONALITIES.get(key) or PERSONA
 
 # How much conversation to remember per channel by default (turns).
 MEMORY_DEFAULT = 4
@@ -108,6 +140,13 @@ def db_init():
             guild_id TEXT, bucket TEXT, calls INTEGER DEFAULT 0,
             PRIMARY KEY (guild_id, bucket)
         );
+        CREATE TABLE IF NOT EXISTS memory (
+            guild_id TEXT, channel_id TEXT, role TEXT, text TEXT, at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS birthdays (
+            guild_id TEXT, user_id TEXT, month TEXT, day TEXT,
+            PRIMARY KEY (guild_id, user_id)
+        );
         """
     )
     conn.commit()
@@ -137,14 +176,20 @@ def set_cfg(guild_id, key, value):
     conn.close()
 
 
+def flag_on(guild_id, key, default="1") -> bool:
+    """Truthy config check that tolerates '1'/'0', 'True'/'False' and empty."""
+    v = str(get_cfg(guild_id, key, default)).strip().lower()
+    return v not in ("", "0", "false", "none")
+
+
 # ---------------------------------------------------------------------------
 # Ollama AI (local or remote — the URL decides; Windows is fine on the far end)
 # ---------------------------------------------------------------------------
 
-async def ask_ollama(endpoint: str, model: str, prompt: str) -> str:
+async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float = 0.8, max_tokens: int = 400) -> str:
     payload = json.dumps(
         {"model": model, "prompt": prompt, "stream": False,
-         "options": {"temperature": 0.8, "num_predict": 400}}
+         "options": {"temperature": float(temperature), "num_predict": int(max_tokens)}}
     ).encode()
 
     def _request():
@@ -170,16 +215,68 @@ async def ask_ollama(endpoint: str, model: str, prompt: str) -> str:
 
 
 def guild_ai_config(guild_id):
-    """Per-server AI settings (admin-overridable via web UI) merged over defaults."""
-    host = lambda k, d: get_cfg("host", k, d)  # self-host defaults set in the web panel
-    return {
-        "endpoint": get_cfg(guild_id, "ai_endpoint", host("ai_endpoint", OLLAMA_BASE_URL)),
+    """Per-server AI settings (admin-overridable via web UI) merged over defaults.
+
+    ``ai_source`` decides where the server's AI runs:
+
+      shared  — Quaestio's trusted shared box (the host). Server admins pick a
+                model from it and can lower memory/quota, never above host caps.
+      self    — the server runs its own Ollama box (bring-your-own). It sets its
+                own endpoint, memory and quota, and may share the box with the
+                community pool (ai_contribute).
+    """
+    host = lambda k, d: get_cfg("host", k, d)
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    source = (get_cfg(guild_id, "ai_source", "shared") or "shared").strip().lower()
+
+    base = {
         "model": get_cfg(guild_id, "ai_model", host("ai_model", OLLAMA_MODEL)),
-        "memory": int(get_cfg(guild_id, "ai_memory", host("ai_memory", MEMORY_DEFAULT))),
-        "enabled": get_cfg(guild_id, "ai_enabled", "1") != "0",
+        "enabled": flag_on(guild_id, "ai_enabled", "1"),
         "instructions": get_cfg(guild_id, "ai_instructions", ""),
-        "quota": int(get_cfg(guild_id, "ai_quota", host("ai_quota", "0"))),  # calls/hr, 0=unlimited
+        "persona": persona_for(get_cfg(guild_id, "ai_personality", "friendly")),
+        "ai_channels": get_cfg(guild_id, "ai_channels", ""),
+        "ai_mention": flag_on(guild_id, "ai_mention", "1"),
+        "temperature": float(get_cfg(guild_id, "ai_temperature", "0.8") or "0.8"),
+        "max_tokens": int(get_cfg(guild_id, "ai_max_tokens", "400") or "400"),
+        "window": max(1, int(get_cfg(guild_id, "ai_window", "6") or "6")),
+        "source": source,
+        "contribute": flag_on(guild_id, "ai_contribute", "0"),
+        # Conversation mode: once the bot replies it "stays" for a few minutes,
+        # so members can keep chatting without @mentioning it again.
+        "conv": flag_on(guild_id, "ai_conv", "0"),
+        "conv_minutes": max(1, int(get_cfg(guild_id, "ai_conv_minutes", "3") or 3)),
     }
+
+    if source == "self":
+        base["endpoint"] = (get_cfg(guild_id, "ai_endpoint", "") or OLLAMA_BASE_URL).strip()
+        base["model"] = get_cfg(guild_id, "ai_model", OLLAMA_MODEL)
+        base["memory"] = max(1, int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT) or MEMORY_DEFAULT))
+        base["quota"] = max(0, int(get_cfg(guild_id, "ai_quota", "0") or 0))
+        return base
+
+    endpoint = host("ai_endpoint", OLLAMA_BASE_URL)
+    host_memory = max(1, int(host("ai_memory", MEMORY_DEFAULT) or MEMORY_DEFAULT))
+    host_quota = max(0, int(host("ai_quota", "0") or 0))
+    memory = max(1, int(get_cfg(guild_id, "ai_memory", host_memory) or host_memory))
+    quota = max(0, int(get_cfg(guild_id, "ai_quota", host_quota) or host_quota))
+    if managed:
+        if host_memory:
+            memory = min(memory, host_memory)
+        if host_quota:
+            quota = min(quota, host_quota)
+    base["endpoint"] = endpoint
+    base["memory"] = memory
+    base["quota"] = quota
+    return base
+
+
+def channel_allowed(guild_id, channel_id, cfg) -> bool:
+    """True if the channel is on the server's AI allowlist (empty list = all)."""
+    raw = (get_cfg(guild_id, "ai_channels", "") or "").strip()
+    if not raw:
+        return True
+    allowed = {c.strip() for c in raw.split(",") if c.strip()}
+    return str(channel_id) in allowed
 
 
 def list_ollama_models(endpoint: str) -> list:
@@ -193,11 +290,21 @@ def list_ollama_models(endpoint: str) -> list:
         return []
 
 
-def quota_ok(guild_id, quota: int) -> bool:
-    """True if the guild has quota left this hour (quota 0 = unlimited)."""
+def usage_bucket(window: int) -> str:
+    """Rolling bucket key: hour, 6-hour block, or calendar day."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if window <= 1:
+        return now.strftime("%Y%m%d%H")
+    if window <= 6:
+        return now.strftime("%Y%m%d") + str(now.hour // 6)
+    return now.strftime("%Y%m%d")
+
+
+def quota_ok(guild_id, quota: int, window: int = 24) -> bool:
+    """True if the guild has quota left in the current window (0 = unlimited)."""
     if not quota:
         return True
-    bucket = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H")
+    bucket = usage_bucket(window)
     conn = db()
     row = conn.execute(
         "SELECT calls FROM usage WHERE guild_id=? AND bucket=?",
@@ -208,8 +315,8 @@ def quota_ok(guild_id, quota: int) -> bool:
     return calls < quota
 
 
-def quota_tick(guild_id):
-    bucket = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H")
+def quota_tick(guild_id, window: int = 24):
+    bucket = usage_bucket(window)
     conn = db()
     conn.execute(
         """INSERT INTO usage (guild_id, bucket, calls) VALUES (?, ?, 1)
@@ -221,31 +328,93 @@ def quota_tick(guild_id):
 
 
 # ---------------------------------------------------------------------------
+# Conversation mode — the bot "stays" a while after a reply, then goes quiet
+# ---------------------------------------------------------------------------
+
+_conv_until = {}
+
+
+def conv_mark(guild_id, channel_id, minutes: int):
+    """The bot is now "in conversation" in this channel for ``minutes`` more."""
+    _conv_until[(guild_id, channel_id)] = time.time() + max(1, minutes) * 60.0
+
+
+def conv_live(guild_id, channel_id, cfg) -> bool:
+    """True if conversation mode is on for this server and the bot is still
+    in an active conversation in this channel (next message needs no @)."""
+    if not cfg.get("conv"):
+        return False
+    expiry = _conv_until.get((guild_id, channel_id))
+    if expiry is None:
+        return False
+    if time.time() >= expiry:
+        _conv_until.pop((guild_id, channel_id), None)
+        return False
+    return True
+
+
+async def _say_goodbye(message):
+    """A member told the bot to leave — end the conversation right now."""
+    _conv_until.pop((message.guild.id, message.channel.id), None)
+    try:
+        await message.channel.send(
+            "👋 okay, I'm stepping out. Just @ me or use `/ask` whenever you want to talk again."
+        )
+    except discord.Forbidden:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Per-channel conversation memory (split conversations & history)
 # ---------------------------------------------------------------------------
 
 class MemoryBank:
-    """Rolling memory per (guild, channel). Small model stays coherent.
+    """Rolling memory per (guild, channel), persisted in the shared SQLite DB.
 
-    maxlen is the per-channel turn cap; it is trimmed at insert time so a
-    channel can never grow unbounded (weak host friendly).
+    Persisting means the web panel can inspect and clear a server's memory,
+    and conversations survive bot restarts. Each channel is trimmed at
+    insert time so it can never grow unbounded.
     """
 
-    def __init__(self):
-        self._turns = {}
-
     def push(self, guild_id, channel_id, role, text, maxlen):
-        key = (guild_id, channel_id)
-        dq = self._turns.setdefault(key, [])
-        dq.append((role, text))
-        if len(dq) > maxlen:
-            del dq[: len(dq) - maxlen]
+        conn = db()
+        conn.execute(
+            "INSERT INTO memory (guild_id, channel_id, role, text, at) VALUES (?, ?, ?, ?, ?)",
+            (str(guild_id), str(channel_id), role, (text or "")[:1000], datetime.datetime.now().isoformat()),
+        )
+        cap = max(8, int(maxlen) * 2 + 4)
+        rows = conn.execute(
+            "SELECT rowid FROM memory WHERE guild_id=? AND channel_id=? ORDER BY rowid DESC",
+            (str(guild_id), str(channel_id)),
+        ).fetchall()
+        if len(rows) > cap:
+            conn.execute(
+                "DELETE FROM memory WHERE guild_id=? AND channel_id=? AND rowid <= ?",
+                (str(guild_id), str(channel_id), rows[cap - 1]["rowid"]),
+            )
+        conn.commit()
+        conn.close()
 
     def context(self, guild_id, channel_id, maxlen):
-        return list(self._turns.get((guild_id, channel_id), []))[-maxlen:]
+        conn = db()
+        rows = conn.execute(
+            "SELECT role, text FROM memory WHERE guild_id=? AND channel_id=? ORDER BY rowid DESC LIMIT ?",
+            (str(guild_id), str(channel_id), int(maxlen)),
+        ).fetchall()
+        conn.close()
+        return [(r["role"], r["text"]) for r in reversed(rows)]
 
-    def clear(self, guild_id, channel_id):
-        self._turns.pop((guild_id, channel_id), None)
+    def clear(self, guild_id, channel_id=None):
+        conn = db()
+        if channel_id is None:
+            conn.execute("DELETE FROM memory WHERE guild_id=?", (str(guild_id),))
+        else:
+            conn.execute(
+                "DELETE FROM memory WHERE guild_id=? AND channel_id=?",
+                (str(guild_id), str(channel_id)),
+            )
+        conn.commit()
+        conn.close()
 
 
 memory = MemoryBank()
@@ -327,11 +496,12 @@ ai_queue = FairAIQueue()
 # Human-like streaming (typing indicator + natural pauses)
 # ---------------------------------------------------------------------------
 
-async def human_type(channel, text):
+async def human_type(channel, text, mention=""):
     """Stream a reply into the channel like a person typing.
 
     Shows the typing indicator, reveals the message in chunks via edit +
-    small random pauses, so a fast local model still feels natural.
+    small random pauses, so a fast local model still feels natural. An
+    optional ``mention`` (e.g. a user ping) is glued to the first chunk.
     """
     chunks = []
     current = ""
@@ -345,6 +515,8 @@ async def human_type(channel, text):
         chunks.append(current)
     if not chunks:
         chunks = [text]
+    if mention and chunks:
+        chunks[0] = f"{mention} {chunks[0]}"
 
     async with channel.typing():
         await asyncio.sleep(0.35 + random.random() * 0.4)
@@ -356,6 +528,155 @@ async def human_type(channel, text):
                 break
             await msg.edit(content=new_text)
     return msg
+
+
+_GOODBYE = (
+    "go away", "goodbye", "bye bye", " bye", "shoo", "get lost",
+    "leave me alone", "stop talking", "stop replying", "done talking",
+    "that's all", "thats all", "never mind", "nevermind", "go to sleep",
+)
+
+
+def is_goodbye(text: str) -> bool:
+    low = re.sub(r"<@!?[0-9]+>", "", text).lower().strip()
+    return any(phrase in low or low == phrase.strip() for phrase in _GOODBYE)
+
+
+async def ai_reply(message: discord.Message, *, ping: bool = True):
+    """Passive AI chat: reply to an @-mention, or (ping=False) to a plain
+    follow-up while conversation mode is active.
+
+    Honors the same per-server rules as /ask: enabled, channel allowlist,
+    quota, memory, instructions. Does not ping the author for follow-ups so
+    a back-and-forth stays conversational.
+    """
+    guild_id = message.guild.id
+    cfg = guild_ai_config(guild_id)
+    if not cfg["enabled"] or not cfg["ai_mention"]:
+        return False
+    if not channel_allowed(guild_id, message.channel.id, cfg):
+        return False
+    if not quota_ok(guild_id, cfg["quota"], cfg["window"]):
+        await _quota_notice(message)
+        return False
+
+    question = message.content[:400].replace(f"<@{message.guild.me.id}>", "").strip() or "…"
+    context = memory.context(guild_id, message.channel.id, cfg["memory"])
+    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"])
+
+    async def factory():
+        return await ask_ollama(
+            cfg["endpoint"], cfg["model"], full_prompt,
+            cfg.get("temperature", 0.8), cfg.get("max_tokens", 400),
+        )
+
+    fut = ai_queue.submit(guild_id, factory)
+    try:
+        answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+        await asyncio.sleep(0)
+    except (BusyError, asyncio.TimeoutError, ConnectionError):
+        return False
+    except asyncio.CancelledError:
+        raise
+
+    quota_tick(guild_id, cfg["window"])
+    memory.push(guild_id, message.channel.id, "user", question, cfg["memory"])
+    memory.push(guild_id, message.channel.id, "bot", answer[:400], cfg["memory"])
+    await human_type(message.channel, answer, mention=message.author.mention if ping else "")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# DMs — the bot chats with anyone who messages it directly
+# ---------------------------------------------------------------------------
+
+_quota_notice_at = {}
+
+
+async def _quota_notice(message):
+    """Tell a channel once per 30 min that the AI quota blocked a reply."""
+    key = (message.guild.id, message.channel.id)
+    now = time.time()
+    if now - _quota_notice_at.get(key, 0) < 1800:
+        return
+    _quota_notice_at[key] = now
+    try:
+        await message.channel.send(
+            "⏳ This server hit its AI quota for this hour, so I went quiet. "
+            "It resets on the hour — the number is in the web panel under AI → Quota."
+        )
+    except discord.Forbidden:
+        pass
+
+
+def host_cfg():
+    """The host operator's own AI box (used for DMs and as managed-mode source)."""
+    h = lambda k, d: get_cfg("host", k, d)
+    return {
+        "endpoint": h("ai_endpoint", OLLAMA_BASE_URL),
+        "model": h("ai_model", OLLAMA_MODEL),
+        "memory": max(1, int(h("ai_memory", MEMORY_DEFAULT) or MEMORY_DEFAULT)),
+        "instructions": h("ai_instructions", ""),
+        "persona": persona_for(h("ai_personality", "friendly")),
+        "quota": max(0, int(h("ai_quota", "0") or 0)),
+        "temperature": float(h("ai_temperature", "0.8") or 0.8),
+        "max_tokens": int(h("ai_max_tokens", "400") or 400),
+        "window": max(1, int(h("ai_window", "6") or 6)),
+        "enabled": flag_on("host", "ai_enabled", "1"),
+        "dm_enabled": flag_on("host", "ai_dm", "1"),
+    }
+
+
+async def dm_chat(channel, question, cfg, mention=""):
+    """Run one AI turn in a DM (or a /ask inside a DM)."""
+    if not cfg["enabled"]:
+        await channel.send("AI chat is disabled right now.")
+        return
+    if not cfg["dm_enabled"]:
+        await channel.send("DM chat is switched off — try mentioning the bot in a server instead.")
+        return
+    if not quota_ok("dm", cfg["quota"], cfg["window"]):
+        await channel.send(
+            "⏳ This hour's AI quota is used up — it resets on the hour. "
+            "Keep chatting after that, or raise the limit in the web panel."
+        )
+        return
+
+    context = memory.context("dm", channel.id, cfg["memory"])
+    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"])
+
+    async def factory():
+        return await ask_ollama(
+            cfg["endpoint"], cfg["model"], full_prompt,
+            cfg["temperature"], cfg["max_tokens"],
+        )
+
+    fut = ai_queue.submit("dm", factory)
+    try:
+        answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+        await asyncio.sleep(0)
+    except BusyError as exc:
+        await channel.send(str(exc))
+        return
+    except asyncio.TimeoutError:
+        await channel.send("The AI took too long. Try again in a moment.")
+        return
+    except ConnectionError as exc:
+        await channel.send(f"⚠️ {exc}")
+        return
+    except asyncio.CancelledError:
+        raise
+
+    quota_tick("dm", cfg["window"])
+    memory.push("dm", channel.id, "user", question, cfg["memory"])
+    memory.push("dm", channel.id, "bot", answer[:400], cfg["memory"])
+    await human_type(channel, answer, mention=mention)
+
+
+async def dm_reply(message: discord.Message):
+    """Mention-style chat in DMs: any message to the bot gets an answer."""
+    question = message.content[:400].strip() or "…"
+    await dm_chat(message.channel, question, host_cfg(), mention=message.author.mention)
 
 
 # ---------------------------------------------------------------------------
@@ -420,26 +741,49 @@ async def on_ready():
         print(f"quaestio: {len(synced)} slash commands synced")
     except Exception as exc:
         print(f"quaestio: sync failed: {exc}")
+    if not getattr(bot, "_bday_task", None) or bot._bday_task.done():
+        bot._bday_task = bot.loop.create_task(birthday_loop())
 
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or message.guild is None:
+    if message.author.bot:
         return
     if message.content.startswith(PREFIX):
         await bot.process_commands(message)
+        return
+    if message.guild is None:
+        await dm_reply(message)
+        return
+    # Passive AI: an @-mention always replies. With conversation mode on, a
+    # plain message also replies while the bot is "still here" (conv_live) —
+    # no @ needed — and every reply refreshes the window. After inactivity it
+    # goes quiet and only @mentions wake it again. Saying "go away" ends the
+    # conversation immediately.
+    _ai_cfg = guild_ai_config(message.guild.id)
+    if conv_live(message.guild.id, message.channel.id, _ai_cfg) and is_goodbye(message.content):
+        await _say_goodbye(message)
+    elif message.guild.me in message.mentions:
+        if await ai_reply(message) and _ai_cfg.get("conv"):
+            conv_mark(message.guild.id, message.channel.id, _ai_cfg["conv_minutes"])
+    elif conv_live(message.guild.id, message.channel.id, _ai_cfg):
+        if await ai_reply(message, ping=False):
+            conv_mark(message.guild.id, message.channel.id, _ai_cfg["conv_minutes"])
+
+    if not flag_on(message.guild.id, "xp_enabled", "1"):
         return
     messages = add_xp(message.guild.id, message.author.id)
     new_level = level_for_messages(messages)
     old_level = level_for_messages(messages - 1)
     if new_level > old_level and new_level > 1:
+        if flag_on(message.guild.id, "level_announce", "1"):
+            try:
+                await message.channel.send(
+                    f"🎉 {message.author.mention} reached **level {new_level}**!"
+                )
+            except discord.Forbidden:
+                pass
         role_id = get_cfg(message.guild.id, "levelrole")
-        try:
-            await message.channel.send(
-                f"🎉 {message.author.mention} reached **level {new_level}**!"
-            )
-        except discord.Forbidden:
-            pass
         if role_id:
             role = message.guild.get_role(int(role_id))
             if role:
@@ -451,8 +795,16 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    if member.bot:
+    if member.bot or not flag_on(member.guild.id, "welcome_enabled", "1"):
         return
+    role_id = get_cfg(member.guild.id, "welcome_role")
+    if role_id:
+        role = member.guild.get_role(int(role_id))
+        if role:
+            try:
+                await member.add_roles(role)
+            except discord.Forbidden:
+                pass
     channel_id = get_cfg(member.guild.id, "welcome_channel")
     if not channel_id:
         return
@@ -551,6 +903,9 @@ async def ai_model_autocomplete(interaction: discord.Interaction, current: str):
 @app_commands.describe(model="Pick from models on your configured AI host, or 'default'")
 @app_commands.autocomplete(model=ai_model_autocomplete)
 async def ai_model_selector(interaction: discord.Interaction, model: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/ai model` inside a server.", ephemeral=True)
+        return
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
@@ -565,6 +920,9 @@ async def ai_model_selector(interaction: discord.Interaction, model: str):
 @AI_GROUP.command(name="toggle", description="Enable or disable AI chat on this server.")
 @app_commands.describe(enabled="true to enable, false to disable")
 async def ai_toggle(interaction: discord.Interaction, enabled: bool):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/ai toggle` inside a server.", ephemeral=True)
+        return
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
@@ -574,21 +932,40 @@ async def ai_toggle(interaction: discord.Interaction, enabled: bool):
 
 @AI_GROUP.command(name="status", description="Show this server's AI settings.")
 async def ai_status(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/ai status` inside a server.", ephemeral=True)
+        return
     cfg = guild_ai_config(interaction.guild.id)
+    allowed_note = "everywhere" if not (cfg["ai_channels"] or "").strip() else "picked channels only"
+    source_note = "shared Quaestio box" if cfg["source"] == "shared" else (f"your own box{f' (in community pool)' if cfg['contribute'] else ''}")
     await interaction.response.send_message(
         f"**AI settings**\n"
         f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
+        f"Source: {source_note}\n"
         f"Model: `{cfg['model']}`\n"
         f"Endpoint: `{cfg['endpoint']}`\n"
         f"Memory: {cfg['memory']} turns/channel\n"
-        f"Quota: {cfg['quota']}/hr {'(unlimited)' if not cfg['quota'] else ''}",
+        f"Quota: {cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}\n"
+        f"Replies on mention: {'✅' if cfg['ai_mention'] else '❌'}\n"
+        f"Conversation mode: {'✅ stays ' + str(cfg['conv_minutes']) + ' min after a reply' if cfg['conv'] else '❌ (needs @ each time)'}\n"
+        f"Allowed channels: {allowed_note}\n"
+        f"Creativity: {cfg['temperature']} · Max reply: {cfg['max_tokens']} tokens",
         ephemeral=True,
     )
 
 
-def _remember_reply(interaction, answer):
+@AI_GROUP.command(name="clear", description="Forget this channel's conversation memory.")
+async def ai_clear(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/ai clear` inside a server channel.", ephemeral=True)
+        return
+    memory.clear(interaction.guild.id, interaction.channel.id)
+    await interaction.response.send_message("🧹 Memory cleared for this channel.", ephemeral=True)
+
+
+def _remember_reply(interaction, answer, prompt):
     cfg = guild_ai_config(interaction.guild.id)
-    question = getattr(interaction, "_q_prompt", "")[:400]
+    question = (prompt or "")[:400]
     memory.push(interaction.guild.id, interaction.channel.id, "user", question, cfg["memory"])
     memory.push(interaction.guild.id, interaction.channel.id, "bot", answer[:400], cfg["memory"])
 
@@ -596,24 +973,37 @@ def _remember_reply(interaction, answer):
 @bot.tree.command(name="ask", description="Chat with Quaestio's local AI.")
 @app_commands.describe(prompt="What you want to say or ask")
 async def ask(interaction: discord.Interaction, prompt: str):
+    if interaction.guild is None:
+        await interaction.response.defer(thinking=True)
+        await dm_chat(interaction.channel, prompt[:400], host_cfg())
+        await interaction.followup.send("▸ sent", ephemeral=True)
+        return
     cfg = guild_ai_config(interaction.guild.id)
     if not cfg["enabled"]:
         await interaction.response.send_message("AI chat is disabled here.", ephemeral=True)
         return
-    if not quota_ok(interaction.guild.id, cfg["quota"]):
+    if not quota_ok(interaction.guild.id, cfg["quota"], cfg["window"]):
         await interaction.response.send_message(
             "⚠️ This server has hit its AI quota for this hour (set in the dashboard).",
             ephemeral=True,
         )
         return
+    if not channel_allowed(interaction.guild.id, interaction.channel.id, cfg):
+        await interaction.response.send_message(
+            "AI chat is switched off in this channel — it's only allowed in the channels picked in the dashboard.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.defer(thinking=True)
-    interaction._q_prompt = prompt
 
     context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
-    full_prompt = build_prompt(PERSONA, context, prompt, cfg["instructions"])
+    full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"])
 
     async def factory():
-        return await ask_ollama(cfg["endpoint"], cfg["model"], full_prompt)
+        return await ask_ollama(
+            cfg["endpoint"], cfg["model"], full_prompt,
+            cfg["temperature"], cfg["max_tokens"],
+        )
 
     fut = ai_queue.submit(interaction.guild.id, factory)
     try:
@@ -632,10 +1022,9 @@ async def ask(interaction: discord.Interaction, prompt: str):
     except asyncio.CancelledError:
         raise
 
-    quota_tick(interaction.guild.id)
-    _remember_reply(interaction, answer)
-    await interaction.followup.send("*(thinking...)*", ephemeral=True)
-    await human_type(interaction.channel, answer)
+    quota_tick(interaction.guild.id, cfg["window"])
+    _remember_reply(interaction, answer, prompt)
+    await human_type(interaction.channel, answer, mention=interaction.user.mention)
 
 
 PANEL_URL = os.environ.get("PANEL_URL", "https://admin.quaestio.online")
@@ -656,9 +1045,18 @@ async def panel(interaction: discord.Interaction):
 @bot.tree.command(name="summarize", description="Summarize the last N messages in this channel.")
 @app_commands.describe(limit="How many messages to summarize (default 20, max 60)")
 async def summarize(interaction: discord.Interaction, limit: int = 20):
+    if interaction.guild is None:
+        await interaction.response.send_message("Summarize works in a server's channel, not DMs.", ephemeral=True)
+        return
     cfg = guild_ai_config(interaction.guild.id)
     if not cfg["enabled"]:
         await interaction.response.send_message("AI chat is disabled here.", ephemeral=True)
+        return
+    if not channel_allowed(interaction.guild.id, interaction.channel.id, cfg):
+        await interaction.response.send_message(
+            "AI chat is switched off in this channel — it's only allowed in the channels picked in the dashboard.",
+            ephemeral=True,
+        )
         return
     limit = max(1, min(limit, 60))
     await interaction.response.defer(thinking=True)
@@ -680,7 +1078,9 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         prompt += "\n\nFollow these server instructions where relevant:\n" + cfg["instructions"]
 
     async def factory():
-        return await ask_ollama(cfg["endpoint"], cfg["model"], prompt)
+        return await ask_ollama(
+            cfg["endpoint"], cfg["model"], prompt, cfg["temperature"], cfg["max_tokens"]
+        )
 
     fut = ai_queue.submit(interaction.guild.id, factory)
     try:
@@ -978,6 +1378,145 @@ async def tags(interaction: discord.Interaction):
 # ---------------------------------------------------------------------------
 # Welcome
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Leaderboard
+# ---------------------------------------------------------------------------
+
+@bot.tree.command(name="leaderboard", description="Top chatters by XP in this server.")
+@app_commands.describe(top="How many to show (default 10, max 25)")
+async def leaderboard(interaction: discord.Interaction, top: int = 10):
+    if interaction.guild is None:
+        await interaction.response.send_message("Leaderboard works inside a server.", ephemeral=True)
+        return
+    top = max(3, min(top, 25))
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, messages FROM xp WHERE guild_id=? ORDER BY messages DESC LIMIT ?",
+        (str(interaction.guild.id), top),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        await interaction.response.send_message("No XP yet — get people chatting first!", ephemeral=True)
+        return
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["**🏆 Top chatters**"]
+    for i, r in enumerate(rows):
+        member = interaction.guild.get_member(int(r["user_id"]))
+        name = member.display_name if member else f"<@{r['user_id']}>"
+        lines.append(f"{medals[i] if i < 3 else f'{i + 1}.'} **{name}** — Lv {level_for_messages(r['messages'])} · {r['messages']} msgs")
+    await interaction.response.send_message("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Birthdays
+# ---------------------------------------------------------------------------
+
+BDAY_GROUP = app_commands.Group(name="birthday", description="Birthday reminders")
+
+
+@BDAY_GROUP.command(name="set", description="Save your birthday (month/day).")
+@app_commands.describe(month="Birth month (1-12)", day="Birth day (1-31)")
+async def bday_set(interaction: discord.Interaction, month: int, day: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/birthday set` inside a server.", ephemeral=True)
+        return
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        await interaction.response.send_message("Pick a valid month (1-12) and day (1-31).", ephemeral=True)
+        return
+    conn = db()
+    conn.execute(
+        """INSERT INTO birthdays (guild_id, user_id, month, day) VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id, user_id)
+           DO UPDATE SET month=excluded.month, day=excluded.day""",
+        (str(interaction.guild.id), str(interaction.user.id), str(month), str(day)),
+    )
+    conn.commit()
+    conn.close()
+    await interaction.response.send_message(
+        f"🎂 Birthday saved as **{month}/{day}**. I'll wish you a note in the server's birthday channel.",
+        ephemeral=True,
+    )
+
+
+@BDAY_GROUP.command(name="remove", description="Remove your birthday.")
+async def bday_remove(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/birthday remove` inside a server.", ephemeral=True)
+        return
+    conn = db()
+    conn.execute(
+        "DELETE FROM birthdays WHERE guild_id=? AND user_id=?",
+        (str(interaction.guild.id), str(interaction.user.id)),
+    )
+    conn.commit()
+    conn.close()
+    await interaction.response.send_message("Birthday removed.", ephemeral=True)
+
+
+@BDAY_GROUP.command(name="list", description="Everyone's saved birthdays.")
+async def bday_list(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/birthday list` inside a server.", ephemeral=True)
+        return
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, month, day FROM birthdays WHERE guild_id=? ORDER BY month, day",
+        (str(interaction.guild.id),),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        await interaction.response.send_message("No birthdays saved yet. Members can save theirs with /birthday set.", ephemeral=True)
+        return
+    lines = ["**🎂 Birthdays**"]
+    for r in rows:
+        lines.append(f"**{r['month']}/{r['day']}** — <@{r['user_id']}>")
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+async def announce_birthdays(month_day: str):
+    """Post in every guild's birthday channel for the people with a birthday today."""
+    month, day = month_day.split("-")
+    conn = db()
+    rows = conn.execute(
+        "SELECT guild_id, user_id FROM birthdays WHERE month=? AND day=?",
+        (month, day),
+    ).fetchall()
+    conn.close()
+    for r in rows:
+        gid = r["guild_id"]
+        if not flag_on(gid, "birthday_enabled", "0"):
+            continue
+        channel_id = get_cfg(gid, "birthday_channel", "")
+        if not channel_id:
+            continue
+        guild = bot.get_guild(int(gid))
+        channel = guild.get_channel(int(channel_id)) if guild else None
+        if not channel:
+            continue
+        member = guild.get_member(int(r["user_id"])) if guild else None
+        try:
+            await channel.send(
+                f"🎂🎉 Happy birthday <@{r['user_id']}>!"
+                + (f" Have an amazing day, **{member.display_name}**! 🎈" if member else "")
+            )
+        except discord.Forbidden:
+            pass
+
+
+async def birthday_loop():
+    await bot.wait_until_ready()
+    last = None
+    while not bot.is_closed():
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%m-%d")
+        if today != last:
+            last = today
+            try:
+                await announce_birthdays(today)
+            except Exception:
+                pass
+        await asyncio.sleep(60)
+
 
 # ---------------------------------------------------------------------------
 # Run
