@@ -681,3 +681,34 @@ input:disabled { opacity: 0.55; cursor: not-allowed; }
   border-radius: 8px; color: inherit; padding: 8px 10px; font: inherit; width: 100%;
 }
 .btn-sm { padding: 5px 10px; font-size: 0.78rem; border-radius: 8px; }
+
+/* Preset tiles */
+#preset-tiles-personality, #preset-tiles-character {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px;
+}
+.preset-tile {
+  background: var(--panel-solid, #161616);
+  border: 1px solid var(--border-strong, #2a2a2a);
+  border-radius: 12px; padding: 12px;
+  cursor: pointer; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.preset-tile:hover { border-color: var(--accent, #6366f1); transform: translateY(-1px); }
+.preset-tile.active { border-color: var(--accent, #6366f1); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25); }
+.preset-tile-top { display: flex; align-items: center; gap: 8px; }
+.preset-tile-emoji { font-size: 1.3rem; line-height: 1; }
+.preset-tile-name { font-weight: 600; font-size: 0.88rem; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-tile-check { color: var(--accent, #6366f1); font-weight: 700; }
+.preset-tile-badge { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent, #6366f1); border: 1px solid var(--accent, #6366f1); border-radius: 6px; padding: 1px 6px; }
+.preset-tile-desc { margin: 0; font-size: 0.76rem; color: var(--muted-2, #999); line-height: 1.4; }
+.preset-tile-view-wrap { margin-top: auto; }
+.preset-tile-view {
+  background: none; border: 1px solid var(--border-strong, #2a2a2a); color: var(--muted, #bbb);
+  border-radius: 8px; padding: 4px 10px; font-size: 0.74rem; cursor: pointer; width: 100%;
+}
+.preset-tile-view:hover { color: #fff; border-color: var(--accent, #6366f1); }
+.preset-tile-detail { border-top: 1px dashed var(--border-strong, #2a2a2a); padding-top: 8px; }
+.preset-detail-text { margin: 0 0 10px; font-size: 0.78rem; color: var(--muted, #bbb); line-height: 1.5; }
+.preset-tile-actions { display: flex; gap: 6px; }
+.preset-tile.custom { border-style: dashed; }
+.preset-form-btns { display: flex; gap: 6px; justify-content: flex-end; }

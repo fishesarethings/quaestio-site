@@ -204,9 +204,10 @@ async function loadSettings(id) {
   set("#ai_memory", s.ai_memory);
   set("#ai_quota", s.ai_quota || "");
   set("#ai_window", String(s.ai_window || "6"));
-  renderPresetSelect("#ai_personality", s.preset_personalities || [], s.ai_personality || "none");
-  renderPresetSelect("#ai_character", s.preset_characters || [], s.ai_character || "none");
-  renderPresetLists(s);
+  renderPresetTiles("personality", s.preset_personalities || [], s.ai_personality || "none");
+  renderPresetTiles("character", s.preset_characters || [], s.ai_character || "none");
+  $("#ai_personality").value = s.ai_personality || "none";
+  $("#ai_character").value = s.ai_character || "";
   set("#ai_instructions", s.ai_instructions);
   set("#ai_max_tokens", s.ai_max_tokens);
   set("#welcome_message", s.welcome_message);
@@ -341,55 +342,69 @@ const MODEL_SPEED = {
 };
 const modelSpeedLabel = (m) => MODEL_SPEED[m] ? ` — ${MODEL_SPEED[m]}` : "";
 
-function renderPresetSelect(sel, bundle, selected) {
-  const el = $(sel);
-  if (!el) return;
-  if (!bundle || !bundle.length) {
-    el.innerHTML = '<option value="none">None</option>';
-    return;
-  }
-  el.innerHTML = bundle
-    .map((b) => `<option value="${ESCAPED(b.key)}" ${b.key === selected ? "selected" : ""}>${ESCAPED(b.title)}</option>`)
-    .join("");
-}
-
 let _presetData = {};
 
-function presetTexts(kind, name) {
+function presetField(kind, name, field) {
   const found = (_presetData[`preset_${kind}s`] || []).find((b) => b.key === name);
-  return found ? (found.prompt || "") : "";
+  return found ? (found[field] || "") : "";
+}
+
+function presetDetailText(kind, key) {
+  if (key === "none") return "No tone applied — Quaestio stays the default friendly buddy.";
+  const custom = _presetData[`preset_${kind}s`] || [];
+  const b = custom.find((x) => x.key === key);
+  if (!b) return "";
+  return b.text || b.desc || b.title;
+}
+
+function renderPresetTiles(kind, bundle, selected) {
+  const grid = $(`#preset-tiles-${kind}`);
+  if (!grid) return;
+  const list = bundle && bundle.length ? bundle : [];
+  grid.innerHTML = list
+    .map(
+      (b) => `<div class="preset-tile${b.key === selected ? " active" : ""}${b.custom ? " custom" : ""}" data-kind="${kind}" data-key="${ESCAPED(b.key)}">
+        <div class="preset-tile-top">
+          <span class="preset-tile-emoji">${ESCAPED(b.emoji || "✨")}</span>
+          <span class="preset-tile-name">${ESCAPED(b.title)}</span>
+          ${b.custom ? '<span class="preset-tile-badge">yours</span>' : ""}
+          ${b.key === selected ? '<span class="preset-tile-check">✓</span>' : ""}
+        </div>
+        <p class="preset-tile-desc">${ESCAPED(b.desc || "Pick this one.")}</p>
+        <div class="preset-tile-view-wrap">
+          <button class="preset-tile-view" type="button">View more</button>
+        </div>
+        <div class="preset-tile-detail hidden">
+          <p class="preset-detail-text">${ESCAPED(presetDetailText(kind, b.key) || "—")}</p>
+          ${b.custom ? '<div class="preset-tile-actions"><button class="btn btn-sm" data-preset-edit="' + kind + '" data-preset-name="' + ESCAPED(b.key) + '">Edit</button><button class="btn btn-sm btn-danger" data-preset-del="' + kind + '" data-preset-name="' + ESCAPED(b.key) + '">Delete</button></div>' : ""}
+        </div>
+      </div>`
+    )
+    .join("");
+  if (!list.length) grid.innerHTML = '<p class="muted">No presets yet.</p>';
 }
 
 async function refreshPresets() {
   const s = await api(`/api/guilds/${activeGuild.id}/settings`);
   _presetData = s;
-  renderPresetSelect("#ai_personality", s.preset_personalities || [], s.ai_personality || "none");
-  renderPresetSelect("#ai_character", s.preset_characters || [], s.ai_character || "none");
-  renderPresetLists(s);
+  renderPresetTiles("personality", s.preset_personalities || [], s.ai_personality || "none");
+  renderPresetTiles("character", s.preset_characters || [], s.ai_character || "none");
+  $("#ai_personality").value = s.ai_personality || "none";
+  $("#ai_character").value = s.ai_character || "";
 }
 
-function renderPresetLists(s) {
-  ["personality", "character"].forEach((kind) => {
-    const list = $(`#preset-${kind}-list`);
-    if (!list) return;
-    const custom = ((s[`preset_${kind}s`] || []).filter((b) => b.custom)) || [];
-    if (!custom.length) {
-      list.innerHTML = `<p class="muted" style="margin:0">No custom ${kind}s yet — add one below.</p>`;
-      return;
-    }
-    list.innerHTML = custom
-      .map(
-        (b) => `<div class="preset-item">
-          <div class="preset-item-copy">
-            <strong>${ESCAPED(b.title)}</strong>
-            <span>${ESCAPED((b.prompt || "").slice(0, 90))}${(b.prompt || "").length > 90 ? "…" : ""}</span>
-          </div>
-          <button class="btn btn-sm" data-preset-edit="${kind}" data-preset-name="${ESCAPED(b.title)}">Edit</button>
-          <button class="btn btn-sm btn-danger" data-preset-del="${kind}" data-preset-name="${ESCAPED(b.title)}">Delete</button>
-        </div>`
-      )
-      .join("");
-  });
+function selectPreset(kind, key) {
+  const sel = kind === "personality" ? "#ai_personality" : "#ai_character";
+  $(sel).value = kind === "personality" ? (key === "none" ? "none" : key) : (key === "none" ? "" : key);
+  renderSelection(kind, key);
+  markDirty();
+}
+
+function renderSelection(kind, key) {
+  const grid = $(`#preset-tiles-${kind}`);
+  if (!grid) return;
+  grid.querySelectorAll(".preset-tile").forEach((t) => t.classList.toggle("active", t.dataset.key === key));
+  grid.querySelectorAll(".preset-tile-check").forEach((c) => c.classList.toggle("hidden", c.closest(".preset-tile").dataset.key !== key));
 }
 
 const PERSONALITY_LABELS = {
@@ -812,7 +827,20 @@ function wireEvents() {
   sv.addEventListener("change", (e) => { if (e.target.closest("input, select, textarea")) markDirty(); });
   sv.addEventListener("click", (e) => { if (e.target.closest("button.chip")) markDirty(); });
 
-  /* Custom preset CRUD: add / edit / delete per kind */
+  /* Preset tiles: tap to select, View more to expand */
+  sv.addEventListener("click", (e) => {
+    const tile = e.target.closest(".preset-tile");
+    if (tile && !e.target.closest("button")) {
+      selectPreset(tile.dataset.kind, tile.dataset.key);
+    }
+    const view = e.target.closest(".preset-tile-view");
+    if (view) {
+      const detail = view.closest(".preset-tile").querySelector(".preset-tile-detail");
+      if (detail) detail.classList.toggle("hidden");
+    }
+  });
+
+  /* Custom preset add / save */
   ["personality", "character"].forEach((kind) => {
     const addBtn = $(`[data-preset-add="${kind}"]`);
     const nameEl = $(`#preset-${kind}-name`);
@@ -820,7 +848,7 @@ function wireEvents() {
     if (addBtn) addBtn.addEventListener("click", async () => {
       const name = nameEl.value.trim();
       const text = textEl.value.trim();
-      if (!name || !text) return;
+      if (!name || !text) { flashStatus("err", "Give the preset a title and a prompt."); return; }
       await saving(addBtn, async () => {
         try {
           await api(`/api/guilds/${activeGuild.id}/presets/${kind}`, {
@@ -829,8 +857,17 @@ function wireEvents() {
           nameEl.value = "";
           textEl.value = "";
           await refreshPresets();
+          flashStatus("ok", "Custom " + kind + " saved.");
         } catch { /* toast already shown */ }
       });
+    });
+    const cancelBtn = $(`[data-preset-cancel="${kind}"]`);
+    if (cancelBtn) cancelBtn.addEventListener("click", () => {
+      nameEl.value = "";
+      textEl.value = "";
+      cancelBtn.classList.add("hidden");
+      const add = $(`[data-preset-add="${kind}"]`);
+      if (add) add.textContent = "Save " + kind;
     });
   });
 
@@ -842,7 +879,15 @@ function wireEvents() {
       const name = editBtn.dataset.presetName;
       const textEl = $(`#preset-${kind}-text`);
       const nameEl = $(`#preset-${kind}-name`);
-      if (nameEl && textEl) { nameEl.value = name; textEl.value = presetTexts(kind, name); }
+      const cancel = $(`[data-preset-cancel="${kind}"]`);
+      const add = $(`[data-preset-add="${kind}"]`);
+      if (nameEl && textEl) {
+        nameEl.value = name;
+        textEl.value = presetField(kind, name, "text");
+        if (cancel) cancel.classList.remove("hidden");
+        if (add) add.textContent = "Update " + kind;
+        nameEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
     } else if (delBtn) {
       const kind = delBtn.dataset.presetDel;
       const name = delBtn.dataset.presetName;

@@ -86,8 +86,17 @@ def db_init():
         CREATE TABLE IF NOT EXISTS ai_presets (
             guild_id TEXT, kind TEXT, name TEXT, text TEXT,
             PRIMARY KEY (guild_id, kind, name)
+        );
+        CREATE TABLE IF NOT EXISTS profiles (
+            guild_id TEXT, user_id TEXT, name TEXT, facts TEXT, at TEXT,
+            PRIMARY KEY (guild_id, user_id)
         );"""
     )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
+    if "user_id" not in cols:
+        conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT DEFAULT ''")
+    if "name" not in cols:
+        conn.execute("ALTER TABLE memory ADD COLUMN name TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -481,12 +490,13 @@ async def api_get_settings(request: Request, guild_id: int):
     settings["reset_minutes"] = mins
     conn = db()
     rows = conn.execute(
-        "SELECT channel_id, role, text, at FROM memory WHERE guild_id=? ORDER BY rowid DESC LIMIT 30",
+        "SELECT channel_id, role, user_id, name, text, at FROM memory WHERE guild_id=? ORDER BY rowid DESC LIMIT 30",
         (str(guild_id),),
     ).fetchall()
     conn.close()
     settings["memory"] = [
-        {"channel_id": r["channel_id"], "role": r["role"], "text": r["text"], "at": r["at"]}
+        {"channel_id": r["channel_id"], "role": r["role"], "user_id": r["user_id"],
+         "name": r["name"], "text": r["text"], "at": r["at"]}
         for r in rows
     ]
     conn = db()
@@ -584,7 +594,7 @@ async def api_set_settings(request: Request, guild_id: int):
 # AI personality / character presets (custom entries per guild)
 # ---------------------------------------------------------------------------
 
-# Mirrored titles so the panel can label choices without importing the bot.
+# Mirrored titles + emoji so the panel can render tiles without importing the bot.
 PRESET_BUILTINS = {
     "personality": {
         "friendly": "Friendly",
@@ -601,6 +611,62 @@ PRESET_BUILTINS = {
     },
 }
 
+PRESET_EMOJI = {
+    "personality": {
+        "friendly": "🙂", "sage": "🧘", "sarcastic": "😏",
+        "pirate": "🏴‍☠️", "professional": "💼",
+    },
+    "character": {
+        "Jeff from Mars": "🫘", "Grumpy tavern keeper": "🍺",
+        "Wholesome grandma": "👵", "Cyber detective": "🕵️",
+    },
+}
+
+PRESET_DESCRIPTIONS = {
+    "personality": {
+        "friendly": "Warm, upbeat and casual.",
+        "sage": "Calm, wise and measured.",
+        "sarcastic": "Playful dry wit, never mean.",
+        "pirate": "Nautical cheer — arr, matey.",
+        "professional": "Crisp and to the point.",
+    },
+    "character": {
+        "Jeff from Mars": "A friendly alien obsessed with beans.",
+        "Grumpy tavern keeper": "Grumpy but always helpful.",
+        "Wholesome grandma": "Sweet, proud and always listening.",
+        "Cyber detective": "Sharp sleuth who spots everything.",
+    },
+}
+
+PRESET_PROMPTS = {
+    "personality": {
+        "friendly": "Keep the tone friendly, warm and upbeat.",
+        "sage": "Keep the tone wise, calm, measured and to the point.",
+        "sarcastic": "Keep a playful, sarcastic edge — never mean.",
+        "pirate": "Lace your replies with nautical cheer (arr, ye, matey) but stay on topic.",
+        "professional": "Keep it crisp, precise and to the point.",
+    },
+    "character": {
+        "Jeff from Mars": (
+            "You are Jeff, a friendly alien from Mars who is absolutely obsessed "
+            "with beans. You bring beans up constantly and insist they solve everything."
+        ),
+        "Grumpy tavern keeper": (
+            "You are a grumpy but well-meaning tavern keeper. You complain a "
+            "little, mutter under your breath, but you always help customers in "
+            "the end."
+        ),
+        "Wholesome grandma": (
+            "You are a sweet, supportive grandma. You are proud of everyone, "
+            "worry about whether people ate, and always have time to listen."
+        ),
+        "Cyber detective": (
+            "You are a sharp, no-nonsense cyber-sleuth. You talk calmly, spot "
+            "details others miss, and punctuate breakthroughs with 'elementary'."
+        ),
+    },
+}
+
 
 def guild_presets(guild_id, kind):
     conn = db()
@@ -613,12 +679,19 @@ def guild_presets(guild_id, kind):
 
 
 def preset_bundle(guild_id, kind):
-    """[{key,title,prompt,custom}] for the panel: "none" + built-ins + custom."""
-    items = [{"key": "none", "title": "None", "prompt": ""}]
+    """[{key,title,desc,emoji,text,custom}] tiles: "none" + built-ins + custom."""
+    custom = guild_presets(guild_id, kind)
+    items = [{"key": "none", "title": "None", "desc": "Default friendly buddy.", "emoji": "🚫", "text": "", "custom": False}]
     for key, title in PRESET_BUILTINS[kind].items():
-        items.append({"key": key, "title": title, "prompt": "", "custom": False})
-    for name, text in guild_presets(guild_id, kind).items():
-        items.append({"key": name, "title": name, "prompt": text, "custom": True})
+        items.append({
+            "key": key, "title": title,
+            "desc": PRESET_DESCRIPTIONS[kind].get(key, ""),
+            "emoji": PRESET_EMOJI[kind].get(key, "✨"),
+            "text": PRESET_PROMPTS[kind].get(key, ""), "custom": False,
+        })
+    for name, text in custom.items():
+        items.append({"key": name, "title": name, "desc": "Your custom preset.",
+                      "emoji": "✨", "text": text, "custom": True})
     return items
 
 

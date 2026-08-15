@@ -215,8 +215,18 @@ def db_init():
             guild_id TEXT, kind TEXT, name TEXT, text TEXT,
             PRIMARY KEY (guild_id, kind, name)
         );
+        CREATE TABLE IF NOT EXISTS profiles (
+            guild_id TEXT, user_id TEXT, name TEXT, facts TEXT, at TEXT,
+            PRIMARY KEY (guild_id, user_id)
+        );
         """
     )
+    # Migration: older databases have a memory table without attribution.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
+    if "user_id" not in cols:
+        conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT DEFAULT ''")
+    if "name" not in cols:
+        conn.execute("ALTER TABLE memory ADD COLUMN name TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -458,14 +468,17 @@ class MemoryBank:
 
     Persisting means the web panel can inspect and clear a server's memory,
     and conversations survive bot restarts. Each channel is trimmed at
-    insert time so it can never grow unbounded.
+    insert time so it can never grow unbounded. Every entry records who said
+    it (user_id + display name) so the bot never confuses speakers.
     """
 
-    def push(self, guild_id, channel_id, role, text, maxlen):
+    def push(self, guild_id, channel_id, role, text, maxlen, user_id="", name=""):
         conn = db()
         conn.execute(
-            "INSERT INTO memory (guild_id, channel_id, role, text, at) VALUES (?, ?, ?, ?, ?)",
-            (str(guild_id), str(channel_id), role, (text or "")[:1000], datetime.datetime.now().isoformat()),
+            "INSERT INTO memory (guild_id, channel_id, role, text, at, user_id, name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (str(guild_id), str(channel_id), role, (text or "")[:1000],
+             datetime.datetime.now().isoformat(), str(user_id or ""), (name or "")[:60]),
         )
         cap = max(8, int(maxlen) * 2 + 4)
         rows = conn.execute(
@@ -483,11 +496,15 @@ class MemoryBank:
     def context(self, guild_id, channel_id, maxlen):
         conn = db()
         rows = conn.execute(
-            "SELECT role, text FROM memory WHERE guild_id=? AND channel_id=? ORDER BY rowid DESC LIMIT ?",
+            "SELECT role, user_id, name, text FROM memory "
+            "WHERE guild_id=? AND channel_id=? ORDER BY rowid DESC LIMIT ?",
             (str(guild_id), str(channel_id), int(maxlen)),
         ).fetchall()
         conn.close()
-        return [(r["role"], r["text"]) for r in reversed(rows)]
+        return [
+            {"role": r["role"], "user_id": r["user_id"], "name": r["name"], "text": r["text"]}
+            for r in reversed(rows)
+        ]
 
     def clear(self, guild_id, channel_id=None):
         conn = db()
@@ -505,7 +522,137 @@ class MemoryBank:
 memory = MemoryBank()
 
 
-def build_prompt(persona, context, question, instructions=""):
+# ---------------------------------------------------------------------------
+# Member profiles — "who is who". We learn a short profile per member from
+# what they actually say ("i like fish"), keep who sent what in memory, and
+# feed both back into the AI prompt so the bot talks to the right person.
+# ---------------------------------------------------------------------------
+
+# Light heuristics to pull "self facts" out of casual chat. Kept deliberately
+# narrow so we don't invent things — only "I/me/my" statements become facts.
+_PROFILE_RE = [
+    re.compile(r"(?:^|\s)i(?:'?m| am) ([a-z][a-z ]{1,40})", re.I),       # "i'm a baker"
+    re.compile(r"(?:^|\s)i (?:really )?(?:like|love|enjoy) ([a-z][a-z ]{1,40})", re.I),
+    re.compile(r"(?:^|\s)i (?:hate|dislike) ([a-z][a-z ]{1,40})", re.I),
+    re.compile(r"(?:^|\s)my favourite? (?:is|are) ([a-z][a-z ]{1,40})", re.I),
+    re.compile(r"(?:^|\s)i (?:play|watch|read|program(?: in| with)?) ([a-z][a-z ]{1,40})", re.I),
+    re.compile(r"(?:^|\s)i (?:work|work as|work with) ([a-z][a-z ]{1,40})", re.I),
+    re.compile(r"(?:^|\s)i (?:use|listen to|collect) ([a-z][a-z ]{1,40})", re.I),
+]
+
+_PROFILE_STOP = re.compile(r"\b(?:u|ur|you|your|my|and|to|the|for|with|that|this|what|how|why|when|where|who|do|you|me|it|is|are|was|be|so|just|like)\b", re.I)
+
+
+def extract_facts(text: str) -> list:
+    """Pull a few short "facts" a member stated about themselves. Returns
+    lowercased fragments like ['a baker', 'fish', 'minecraft'] — capped and
+    cleaned so the profile stays tiny and honest."""
+    out = []
+    t = (text or "")[:400]
+    for rx in _PROFILE_RE:
+        for m in rx.finditer(t):
+            frag = m.group(1).strip().strip(".,!?")
+            if not frag or len(frag) > 40:
+                continue
+            if _PROFILE_STOP.fullmatch(frag):
+                continue
+            if frag not in out:
+                out.append(frag)
+        if len(out) >= 4:
+            break
+    return out
+
+
+def learn_profile_message(message):
+    """Record the author's self-facts + keep the speaker attribution."""
+    if message.author.bot or message.guild is None:
+        return
+    facts = extract_facts(message.content)
+    if not facts:
+        return
+    conn = db()
+    row = conn.execute(
+        "SELECT facts FROM profiles WHERE guild_id=? AND user_id=?",
+        (str(message.guild.id), str(message.author.id)),
+    ).fetchone()
+    known = (row["facts"].split("\n") if row else [])
+    for f in facts:
+        if f not in known:
+            known.append(f)
+    known = known[-8:]
+    conn.execute(
+        """INSERT INTO profiles (guild_id, user_id, name, facts, at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, user_id)
+           DO UPDATE SET name=excluded.name, facts=excluded.facts, at=excluded.at""",
+        (str(message.guild.id), str(message.author.id),
+         message.author.display_name[:60], "\n".join(known),
+         datetime.datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _facts_text(parts) -> str:
+    """Turn raw fact fragments into a readable list like 'likes fish, plays guitar'."""
+    nice = []
+    for p in parts:
+        low = p.lower()
+        if low.startswith(("a ", "an ", "the ")):
+            nice.append(f"is {p}")
+        else:
+            nice.append(f"likes {p}")
+    return ", ".join(nice)
+
+
+def profile_facts(guild_id, user_id) -> str:
+    """This member's learned profile as a sentence, or ''."""
+    conn = db()
+    row = conn.execute(
+        "SELECT facts FROM profiles WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    ).fetchone()
+    conn.close()
+    if not row or not row["facts"]:
+        return ""
+    return _facts_text(row["facts"].split("\n"))
+
+
+def profile_lines(guild_id, user_ids) -> list:
+    """["name — likes fish", ...] for the given members (deduped, capped)."""
+    ids = []
+
+    def _seen(u):
+        s = str(u)
+        if s and s not in ids:
+            ids.append(s)
+
+    for u in user_ids:
+        _seen(u)
+    if not ids:
+        return []
+    q = ",".join("?" * len(ids))
+    conn = db()
+    rows = conn.execute(
+        f"SELECT name, facts FROM profiles WHERE guild_id=? AND user_id IN ({q})",
+        [str(guild_id), *ids],
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        if not r["facts"]:
+            continue
+        out.append(f"{r['name']} — {_facts_text(r['facts'].split('\n'))}")
+    return out[:8]
+
+
+def build_prompt(persona, context, question, instructions="", member_profiles=None):
+    """Build the final LLM prompt.
+
+    ``context`` is a list of dicts {"role","user_id","name","text"} from
+    MemoryBank. ``member_profiles`` is a list of "name — likes X" strings from
+    profile_lines(), shown so the model knows who's who without being told to
+    guess facts.
+    """
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%B %d, %Y")
     lines = [
         persona,
@@ -513,13 +660,17 @@ def build_prompt(persona, context, question, instructions=""):
         f"Today is {today} (UTC). Use it for anything time-related; never guess dates.",
         "The messages below are from real members of a Discord server.",
     ]
+    if member_profiles:
+        lines += ["", "What we know about some of these members (use it, don't repeat it):"]
+        for line in member_profiles:
+            lines.append(f"- {line}")
     if instructions:
         lines += ["", "SERVER INSTRUCTIONS (follow these, they override the above):", instructions]
     lines += ["", "Recent conversation:"]
-    for role, text in context[-6:]:
-        speaker = "member" if role == "user" else "you"
-        lines.append(f"{speaker}: {text}")
-    lines += ["", f"the member just said: {question}", "You reply:"]
+    for m in context[-6:]:
+        speaker = "you" if m["role"] == "bot" else (m["name"] or "member")
+        lines.append(f"{speaker}: {m['text']}")
+    lines += ["", f"the member just asked: {question}", "You reply:"]
     return "\n".join(lines)
 
 
@@ -653,7 +804,8 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
 
     question = message.content[:400].replace(f"<@{message.guild.me.id}>", "").strip() or "…"
     context = memory.context(guild_id, message.channel.id, cfg["memory"])
-    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"])
+    profiles = profile_lines(guild_id, [m.get("user_id") for m in context] + [message.author.id])
+    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profiles)
 
     async def factory():
         return await ask_ollama(
@@ -671,8 +823,10 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
         raise
 
     quota_tick(guild_id, cfg["window"])
-    memory.push(guild_id, message.channel.id, "user", question, cfg["memory"])
-    memory.push(guild_id, message.channel.id, "bot", answer[:400], cfg["memory"])
+    memory.push(guild_id, message.channel.id, "user", question, cfg["memory"],
+                user_id=message.author.id, name=message.author.display_name)
+    memory.push(guild_id, message.channel.id, "bot", answer[:400], cfg["memory"],
+                user_id=message.guild.me.id, name=message.guild.me.display_name)
     await human_type(message.channel, answer, mention=message.author.mention if ping else "")
     return True
 
@@ -721,7 +875,7 @@ def host_cfg():
     }
 
 
-async def dm_chat(channel, question, cfg, mention=""):
+async def dm_chat(channel, question, cfg, mention="", user_id="", name=""):
     """Run one AI turn in a DM (or a /ask inside a DM)."""
     if not cfg["enabled"]:
         await channel.send("AI chat is disabled right now.")
@@ -737,7 +891,8 @@ async def dm_chat(channel, question, cfg, mention=""):
         return
 
     context = memory.context("dm", channel.id, cfg["memory"])
-    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"])
+    who = [m.get("user_id") for m in context]
+    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profile_lines("dm", who))
 
     async def factory():
         return await ask_ollama(
@@ -762,7 +917,7 @@ async def dm_chat(channel, question, cfg, mention=""):
         raise
 
     quota_tick("dm", cfg["window"])
-    memory.push("dm", channel.id, "user", question, cfg["memory"])
+    memory.push("dm", channel.id, "user", question, cfg["memory"], user_id=user_id, name=name)
     memory.push("dm", channel.id, "bot", answer[:400], cfg["memory"])
     await human_type(channel, answer, mention=mention)
 
@@ -770,7 +925,8 @@ async def dm_chat(channel, question, cfg, mention=""):
 async def dm_reply(message: discord.Message):
     """Mention-style chat in DMs: any message to the bot gets an answer."""
     question = message.content[:400].strip() or "…"
-    await dm_chat(message.channel, question, host_cfg(), mention=message.author.mention)
+    await dm_chat(message.channel, question, host_cfg(), mention=message.author.mention,
+                  user_id=message.author.id, name=message.author.display_name)
 
 
 # ---------------------------------------------------------------------------
@@ -843,6 +999,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    learn_profile_message(message)
     if message.content.startswith(PREFIX):
         await bot.process_commands(message)
         return
@@ -1026,6 +1183,70 @@ async def ai_toggle(interaction: discord.Interaction, enabled: bool):
     await interaction.response.send_message(f"AI chat {'enabled' if enabled else 'disabled'}.")
 
 
+def preset_choice_items(guild_id, kind):
+    """Autocomplete choices: 'none' + built-in + custom preset names."""
+    found = {"none"}
+    for name in PERSONALITIES if kind == "personality" else CHARACTERS:
+        found.add(name)
+    for name in guild_presets(guild_id, kind):
+        found.add(name)
+    return [app_commands.Choice(name=n, value=n) for n in sorted(found)]
+
+
+async def _personality_ac(interaction: discord.Interaction, current: str):
+    """Autocomplete callback (must be a coroutine function)."""
+    return preset_choice_items(interaction.guild_id or 0, "personality")
+
+
+async def _character_ac(interaction: discord.Interaction, current: str):
+    """Autocomplete callback (must be a coroutine function)."""
+    return preset_choice_items(interaction.guild_id or 0, "character")
+
+
+@AI_GROUP.command(name="personality", description="Set the bot's personality tone (or 'none').")
+@app_commands.describe(name="Personality name, or 'none'")
+@app_commands.autocomplete(name=_personality_ac)
+async def ai_personality(interaction: discord.Interaction, name: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/ai personality` inside a server.", ephemeral=True)
+        return
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
+    key = name.strip()
+    if key == "none":
+        set_cfg(interaction.guild.id, "ai_personality", "none")
+        await interaction.response.send_message("Personality → **none** (default buddy).")
+        return
+    if key not in PERSONALITIES and key not in guild_presets(interaction.guild.id, "personality"):
+        await interaction.response.send_message(f"Unknown personality `{key}`.", ephemeral=True)
+        return
+    set_cfg(interaction.guild.id, "ai_personality", key)
+    await interaction.response.send_message(f"Personality → **{key}**.")
+
+
+@AI_GROUP.command(name="character", description="Set how the bot pretends to be (or 'none').")
+@app_commands.describe(name="Character name, or 'none'")
+@app_commands.autocomplete(name=_character_ac)
+async def ai_character(interaction: discord.Interaction, name: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/ai character` inside a server.", ephemeral=True)
+        return
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
+    key = name.strip()
+    if key == "none":
+        set_cfg(interaction.guild.id, "ai_character", "")
+        await interaction.response.send_message("Character → **none**.")
+        return
+    if key not in CHARACTERS and key not in guild_presets(interaction.guild.id, "character"):
+        await interaction.response.send_message(f"Unknown character `{key}`.", ephemeral=True)
+        return
+    set_cfg(interaction.guild.id, "ai_character", key)
+    await interaction.response.send_message(f"Character → **{key}**.")
+
+
 @AI_GROUP.command(name="status", description="Show this server's AI settings.")
 async def ai_status(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -1066,8 +1287,10 @@ async def ai_clear(interaction: discord.Interaction):
 def _remember_reply(interaction, answer, prompt):
     cfg = guild_ai_config(interaction.guild.id)
     question = (prompt or "")[:400]
-    memory.push(interaction.guild.id, interaction.channel.id, "user", question, cfg["memory"])
-    memory.push(interaction.guild.id, interaction.channel.id, "bot", answer[:400], cfg["memory"])
+    memory.push(interaction.guild.id, interaction.channel.id, "user", question, cfg["memory"],
+                user_id=interaction.user.id, name=interaction.user.display_name)
+    memory.push(interaction.guild.id, interaction.channel.id, "bot", answer[:400], cfg["memory"],
+                user_id=interaction.guild.me.id, name=interaction.guild.me.display_name)
 
 
 @bot.tree.command(name="ask", description="Chat with Quaestio's local AI.")
@@ -1075,7 +1298,9 @@ def _remember_reply(interaction, answer, prompt):
 async def ask(interaction: discord.Interaction, prompt: str):
     if interaction.guild is None:
         await interaction.response.defer(thinking=True)
-        await dm_chat(interaction.channel, prompt[:400], host_cfg())
+        await dm_chat(interaction.channel, prompt[:400], host_cfg(),
+                      mention=interaction.user.mention,
+                      user_id=interaction.user.id, name=interaction.user.display_name)
         await interaction.followup.send("▸ sent", ephemeral=True)
         return
     cfg = guild_ai_config(interaction.guild.id)
@@ -1100,7 +1325,8 @@ async def ask(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer(thinking=True)
 
     context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
-    full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"])
+    profiles = profile_lines(interaction.guild.id, [m.get("user_id") for m in context] + [interaction.user.id])
+    full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"], profiles)
 
     async def factory():
         return await ask_ollama(
@@ -1230,23 +1456,50 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     )
 
 
-@bot.tree.command(name="top", description="The top 10 members in this server.")
-async def top(interaction: discord.Interaction):
+@bot.tree.command(name="profile", description="What Quaestio has learned about a member.")
+@app_commands.describe(member="Member to check (defaults to you)")
+async def profile(interaction: discord.Interaction, member: discord.Member = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/profile` inside a server.", ephemeral=True)
+        return
+    member = member or interaction.user
+    facts = profile_facts(interaction.guild.id, member.id)
+    if not facts:
+        await interaction.response.send_message(
+            f"{member.display_name} — I haven't learned anything about them yet. "
+            "Say things like *'I like fish'* and I'll start remembering.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"🧠 **What I know about {member.display_name}**\n{facts}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="leaderboard", description="Top chatters by XP in this server.")
+@app_commands.describe(top="How many to show (default 10, max 25)")
+async def leaderboard(interaction: discord.Interaction, top: int = 10):
+    if interaction.guild is None:
+        await interaction.response.send_message("Leaderboard works inside a server.", ephemeral=True)
+        return
+    top = max(3, min(top, 25))
     conn = db()
     rows = conn.execute(
-        "SELECT user_id, messages FROM xp WHERE guild_id=? ORDER BY messages DESC LIMIT 10",
-        (str(interaction.guild.id),),
+        "SELECT user_id, messages FROM xp WHERE guild_id=? ORDER BY messages DESC LIMIT ?",
+        (str(interaction.guild.id), top),
     ).fetchall()
     conn.close()
     if not rows:
-        await interaction.response.send_message("No XP yet — start chatting! 🚀")
+        await interaction.response.send_message("No XP yet — get people chatting first!", ephemeral=True)
         return
-    lines = []
-    for i, row in enumerate(rows, 1):
-        member = interaction.guild.get_member(int(row["user_id"]))
-        name = member.display_name if member else f"<@{row['user_id']}>"
-        lines.append(f"**{i}.** {name} — {row['messages']} msgs (Lv{level_for_messages(row['messages'])})")
-    await interaction.response.send_message("🏆 **Server leaderboard**\n" + "\n".join(lines))
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["**🏆 Top chatters**"]
+    for i, r in enumerate(rows):
+        member = interaction.guild.get_member(int(r["user_id"]))
+        name = member.display_name if member else f"<@{r['user_id']}>"
+        lines.append(f"{medals[i] if i < 3 else f'{i + 1}.'} **{name}** — Lv {level_for_messages(r['messages'])} · {r['messages']} msgs")
+    await interaction.response.send_message("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -1476,39 +1729,6 @@ async def tags(interaction: discord.Interaction):
     else:
         names = ", ".join(r["name"] for r in rows)
         await interaction.response.send_message(f"📚 **Tags:** {names}")
-
-
-# ---------------------------------------------------------------------------
-# Welcome
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Leaderboard
-# ---------------------------------------------------------------------------
-
-@bot.tree.command(name="leaderboard", description="Top chatters by XP in this server.")
-@app_commands.describe(top="How many to show (default 10, max 25)")
-async def leaderboard(interaction: discord.Interaction, top: int = 10):
-    if interaction.guild is None:
-        await interaction.response.send_message("Leaderboard works inside a server.", ephemeral=True)
-        return
-    top = max(3, min(top, 25))
-    conn = db()
-    rows = conn.execute(
-        "SELECT user_id, messages FROM xp WHERE guild_id=? ORDER BY messages DESC LIMIT ?",
-        (str(interaction.guild.id), top),
-    ).fetchall()
-    conn.close()
-    if not rows:
-        await interaction.response.send_message("No XP yet — get people chatting first!", ephemeral=True)
-        return
-    medals = ["🥇", "🥈", "🥉"]
-    lines = ["**🏆 Top chatters**"]
-    for i, r in enumerate(rows):
-        member = interaction.guild.get_member(int(r["user_id"]))
-        name = member.display_name if member else f"<@{r['user_id']}>"
-        lines.append(f"{medals[i] if i < 3 else f'{i + 1}.'} **{name}** — Lv {level_for_messages(r['messages'])} · {r['messages']} msgs")
-    await interaction.response.send_message("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
