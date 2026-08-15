@@ -176,7 +176,8 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 # ---------------------------------------------------------------------------
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.execute("PRAGMA busy_timeout=15000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -218,6 +219,12 @@ def db_init():
         CREATE TABLE IF NOT EXISTS profiles (
             guild_id TEXT, user_id TEXT, name TEXT, facts TEXT, at TEXT,
             PRIMARY KEY (guild_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS hosters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, endpoint TEXT, model TEXT,
+            share INTEGER DEFAULT 50, enabled INTEGER DEFAULT 1,
+            added_by TEXT, at TEXT
         );
         """
     )
@@ -299,6 +306,8 @@ async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float 
         raise ConnectionError("AI is offline — the model box isn't reachable.")
     except (TimeoutError, OSError):
         raise ConnectionError("AI timed out. Try again in a moment.")
+    except (json.JSONDecodeError, ValueError, KeyError):
+        raise ConnectionError("AI returned something unexpected.")
 
     response = (result.get("response") or "").strip()
     if not response:
@@ -353,6 +362,9 @@ def guild_ai_config(guild_id):
         return base
 
     endpoint = host("ai_endpoint", OLLAMA_BASE_URL)
+    pool_endpoint = pick_pool_endpoint(base["model"])
+    if pool_endpoint:
+        endpoint = pool_endpoint
     host_memory = max(1, int(host("ai_memory", MEMORY_DEFAULT) or MEMORY_DEFAULT))
     host_quota = max(0, int(host("ai_quota", "0") or 0))
     memory = max(1, int(get_cfg(guild_id, "ai_memory", host_memory) or host_memory))
@@ -386,6 +398,72 @@ def list_ollama_models(endpoint: str) -> list:
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Resource pool: community members opt in and lend part of their Ollama box.
+# Each hoster registers an endpoint + a model + what % of their box they share.
+# Shared-source servers are routed across the pool, weighted by share amount.
+# 0-host pool simply falls back to the host's own box — the pool is transparent.
+# ---------------------------------------------------------------------------
+
+def pool_hosters(enabled_only=True):
+    """All registered pool contributors: {id, name, endpoint, model, share, enabled}."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, name, endpoint, model, share, enabled FROM hosters"
+        + (" WHERE enabled=1" if enabled_only else "")
+        + " ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def pool_total_share() -> int:
+    """Sum of how much capacity the community currently lends to the pool."""
+    conn = db()
+    row = conn.execute("SELECT COALESCE(SUM(share), 0) FROM hosters WHERE enabled=1").fetchone()
+    conn.close()
+    return int(row[0] or 0)
+
+
+def pool_add(name, endpoint, model, share=50):
+    conn = db()
+    conn.execute(
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        (name, endpoint, model, int(share), name, datetime.datetime.now(datetime.timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def pool_remove(hoster_id):
+    conn = db()
+    conn.execute("DELETE FROM hosters WHERE id=?", (int(hoster_id),))
+    conn.commit()
+    conn.close()
+
+
+def pool_set(hoster_id, enabled=None, share=None):
+    conn = db()
+    if enabled is not None:
+        conn.execute("UPDATE hosters SET enabled=? WHERE id=?", (1 if enabled else 0, int(hoster_id)))
+    if share is not None:
+        conn.execute("UPDATE hosters SET share=? WHERE id=?", (max(0, min(100, int(share))), int(hoster_id)))
+    conn.commit()
+    conn.close()
+
+
+def pick_pool_endpoint(model="") -> str:
+    """Pick an endpoint from the pool (weighted by share). Empty pool → ""."""
+    hosters = pool_hosters()
+    if not hosters:
+        return ""
+    matching = [h for h in hosters if model and h["model"] and model in h["model"]]
+    pool = matching or hosters
+    weights = [max(h["share"], 0) or 1 for h in pool]
+    picked = random.choices(pool, weights=weights, k=1)[0]
+    return (picked["endpoint"] or "").strip()
 
 
 def usage_bucket(window: int) -> str:
@@ -723,9 +801,16 @@ class FairAIQueue:
                     if fut.cancelled():
                         continue
                     try:
-                        result = await factory()
+                        result = await asyncio.wait_for(
+                            factory(), timeout=OLLAMA_TIMEOUT + 60
+                        )
                         if not fut.done():
                             fut.set_result(result)
+                    except asyncio.TimeoutError:
+                        if not fut.done():
+                            fut.set_exception(ConnectionError("AI took too long."))
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as exc:
                         if not fut.done():
                             fut.set_exception(exc)
@@ -817,13 +902,14 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
         )
 
     fut = ai_queue.submit(guild_id, factory)
-    try:
-        answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
-        await asyncio.sleep(0)
-    except (BusyError, asyncio.TimeoutError, ConnectionError):
-        return False
-    except asyncio.CancelledError:
-        raise
+    async with message.channel.typing():
+        try:
+            answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+            await asyncio.sleep(0)
+        except (BusyError, asyncio.TimeoutError, ConnectionError):
+            return False
+        except asyncio.CancelledError:
+            raise
 
     quota_tick(guild_id, cfg["window"])
     memory.push(guild_id, message.channel.id, "user", question, cfg["memory"],
@@ -1024,6 +1110,13 @@ async def on_ready():
     if not getattr(bot, "_bday_task", None) or bot._bday_task.done():
         bot._bday_task = bot.loop.create_task(birthday_loop())
 
+    # Localhost settings page (opt-in via CLI: quaestio.py localweb)
+    if _local_web() and not getattr(bot, "_local_web_started", False):
+        bot._local_web_started = True
+        import threading
+        threading.Thread(target=_serve_local_web, daemon=True).start()
+        print(f"quaestio: local settings page on port {os.environ.get('LOCAL_WEB_PORT', '8123')}")
+
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -1165,6 +1258,235 @@ async def eightball(interaction: discord.Interaction, question: str):
     ]
     await interaction.response.send_message(
         f"> {question}\n{random.choice(answers)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Games
+# ---------------------------------------------------------------------------
+
+@bot.tree.command(name="dice", description="Roll some dice. Defaults to 1d6.")
+async def dice(interaction: discord.Interaction, dice: str = "1d6"):
+    m = re.fullmatch(r"(\d*)d(\d+)", dice.strip().lower())
+    if not m:
+        await interaction.response.send_message("Try something like `2d6` or `1d20`.", ephemeral=True)
+        return
+    count = int(m.group(1)) if m.group(1) else 1
+    sides = int(m.group(2))
+    count = max(1, min(count, 20))
+    sides = max(2, min(sides, 1000000))
+    rolls = [random.randint(1, sides) for _ in range(count)]
+    total = sum(rolls)
+    show = ", ".join(str(r) for r in rolls)
+    name = interaction.user.display_name
+    if count == 1:
+        await interaction.response.send_message(f"🎲 **{name}** rolled **{total}** on a d{sides}.")
+    else:
+        await interaction.response.send_message(f"🎲 **{name}** rolled **{total}** ({show}) with `{count}d{sides}`.")
+
+
+@bot.tree.command(name="coin", description="Flip a coin.")
+async def coin(interaction: discord.Interaction):
+    result = random.choice(["Heads", "Tails"])
+    side = "🪙" if result == "Heads" else "🪙"
+    await interaction.response.send_message(f"{side} **{interaction.user.display_name}** flipped **{result}**!")
+
+
+@bot.tree.command(name="rps", description="Play rock, paper, scissors against the bot.")
+@app_commands.describe(choice="rock, paper or scissors")
+@app_commands.choices(choice=[
+    app_commands.Choice(name="🪨 Rock", value="rock"),
+    app_commands.Choice(name="📄 Paper", value="paper"),
+    app_commands.Choice(name="✂️ Scissors", value="scissors"),
+])
+async def rps(interaction: discord.Interaction, choice: str):
+    bot_choice = random.choice(["rock", "paper", "scissors"])
+    emoji = {"rock": "🪨", "paper": "📄", "scissors": "✂️"}
+    wins = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+    user_emoji = emoji.get(choice, choice)
+    bot_emoji = emoji[bot_choice]
+    if choice == bot_choice:
+        outcome = "**It's a tie!** 🤝"
+    elif wins[choice] == bot_choice:
+        outcome = "**You win!** 🎉"
+    else:
+        outcome = "**I win!** 😏"
+    await interaction.response.send_message(
+        f"{user_emoji} You picked {choice} · {bot_emoji} I picked {bot_choice}\n{outcome}"
+    )
+
+
+_TRIVIA = [
+    ("What is the largest planet in our solar system?", "Jupiter"),
+    ("How many continents are there?", "7"),
+    ("What gas do plants absorb from the air?", "CO2"),
+    ("What is the fastest land animal?", "Cheetah"),
+    ("How many hearts does an octopus have?", "3"),
+    ("What is the capital of Japan?", "Tokyo"),
+    ("Which element has the chemical symbol 'O'?", "Oxygen"),
+    ("How many colours are in a rainbow?", "7"),
+    ("What is the longest river in the world?", "Nile"),
+    ("How many strings does a guitar have?", "6"),
+    ("What is the closest star to Earth?", "Sun"),
+    ("Which planet is known as the Red Planet?", "Mars"),
+    ("How many days are in a leap year?", "366"),
+    ("What is the national animal of Australia?", "Kangaroo"),
+    ("How many legs does a spider have?", "8"),
+]
+
+_trivia_answer_at = {}
+
+
+@bot.tree.command(name="trivia", description="Answer a random trivia question.")
+async def trivia(interaction: discord.Interaction):
+    question, answer = random.choice(_TRIVIA)
+    key = (interaction.guild.id if interaction.guild else "dm", interaction.channel.id)
+    _trivia_answer_at[key] = (answer, time.time())
+    await interaction.response.send_message(
+        f"❓ **Trivia:** {question}\nFirst correct reply wins! (Answer with `/answer <your answer>` within 30s.)"
+    )
+
+
+@bot.tree.command(name="answer", description="Answer the running trivia question.")
+async def answer(interaction: discord.Interaction, answer_text: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("Trivia only runs in servers.", ephemeral=True)
+        return
+    key = (interaction.guild.id, interaction.channel.id)
+    entry = _trivia_answer_at.get(key)
+    if not entry:
+        await interaction.response.send_message(
+            "No trivia question is running in this channel. Try `/trivia` first.",
+            ephemeral=True,
+        )
+        return
+    expected, when = entry
+    if time.time() - when > 30:
+        _trivia_answer_at.pop(key, None)
+        await interaction.response.send_message("That round already ended — answer too slow! 🕐", ephemeral=True)
+        return
+    guess = answer_text.strip().lower()
+    if guess != expected.lower():
+        await interaction.response.send_message("Nope, not right. Try again! 🤔", ephemeral=True)
+        return
+    _trivia_answer_at.pop(key, None)
+    await interaction.response.send_message(
+        f"🎉 **{interaction.user.display_name}** got it! The answer was **{expected}**."
+    )
+
+
+_SLOT_SYMBOLS = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
+
+
+@bot.tree.command(name="slot", description="Spin the slot machine.")
+async def slot(interaction: discord.Interaction):
+    roll = [random.choice(_SLOT_SYMBOLS) for _ in range(3)]
+    line = "".join(roll)
+    if roll[0] == roll[1] == roll[2]:
+        if roll[0] == "7️⃣":
+            verdict = "💥 **JACKPOT!** You hit the jackpot!"
+        elif roll[0] == "💎":
+            verdict = "✨ **BIG WIN!** Sparkling diamonds!"
+        else:
+            verdict = "🎉 **WINNER!** Triple match!"
+    elif roll[0] == roll[1] or roll[1] == roll[2]:
+        verdict = "👍 Close — two in a row!"
+    else:
+        verdict = "😅 No luck this time."
+    await interaction.response.send_message(f"🎰 **{interaction.user.display_name}** spun:\n\n`{line}`\n\n{verdict}")
+
+
+_BOARD_EMOJI = {"x": "❌", "o": "⭕", "": "·"}
+_games = {}
+
+
+def _board_view(board, show) -> str:
+    return "```\n" + "\n".join(
+        " ".join(_BOARD_EMOJI[k if show else ""] for k in board[y * 3:(y + 1) * 3])
+        for y in range(3)
+    ) + "\n```"
+
+
+def _winner_of(board):
+    lines = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8],
+        [0, 3, 6], [1, 4, 7], [2, 5, 8],
+        [0, 4, 8], [2, 4, 6],
+    ]
+    for a, b, c in lines:
+        if board[a] and board[a] == board[b] == board[c]:
+            return board[a]
+    if all(board):
+        return "draw"
+    return None
+
+
+@bot.tree.command(name="tictactoe", description="Play tic-tac-toe (X) against a friend (O).")
+@app_commands.describe(opponent="The friend you want to play against")
+async def tictactoe(interaction: discord.Interaction, opponent: discord.Member):
+    if opponent.bot:
+        await interaction.response.send_message("The bot doesn't play tic-tac-toe. Pick a human!", ephemeral=True)
+        return
+    if opponent == interaction.user:
+        await interaction.response.send_message("You can't play against yourself. Pick a friend!", ephemeral=True)
+        return
+    key = (interaction.guild.id, interaction.channel.id)
+    if key in _games:
+        await interaction.response.send_message(
+            "A game is already running in this channel. Use `/move` to play.", ephemeral=True)
+        return
+    _games[key] = {
+        "board": [""] * 9,
+        "players": {"x": interaction.user.id, "o": opponent.id},
+        "turn": "x",
+        "last_cell": None,
+    }
+    await interaction.response.send_message(
+        f"⭕ **Tic-tac-toe:** {interaction.user.mention} (❌) vs {opponent.mention} (⭕)\n"
+        f"{_board_view(_games[key]['board'])}\n"
+        f"{interaction.user.mention} to move — pick a square with `/move 1-9`."
+    )
+
+
+@bot.tree.command(name="move", description="Play a square in the running tic-tac-toe game (1–9).")
+@app_commands.describe(cell="Square number 1–9 (top-left to bottom-right)")
+async def move(interaction: discord.Interaction, cell: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("Only in servers.", ephemeral=True)
+        return
+    key = (interaction.guild.id, interaction.channel.id)
+    game = _games.get(key)
+    if not game:
+        await interaction.response.send_message(
+            "No game running in this channel. Start one with `/tictactoe @friend`.", ephemeral=True)
+        return
+    if interaction.user.id != game["players"][game["turn"]]:
+        await interaction.response.send_message("It's not your turn.", ephemeral=True)
+        return
+    if not 1 <= cell <= 9 or game["board"][cell - 1]:
+        await interaction.response.send_message("That square is taken or out of range.", ephemeral=True)
+        return
+    game["board"][cell - 1] = game["turn"]
+    winner = _winner_of(game["board"])
+    who = interaction.user.mention
+    if winner:
+        _games.pop(key, None)
+        if winner == "draw":
+            await interaction.response.send_message(
+                f"{_board_view(game['board'])}\n🤝 **It's a draw!**"
+            )
+        else:
+            mark = "❌" if winner == "x" else "⭕"
+            await interaction.response.send_message(
+                f"{_board_view(game['board'])}\n🎉 **{who} wins** with {mark}!"
+            )
+        return
+    game["turn"] = "o" if game["turn"] == "x" else "x"
+    next_mark = "⭕" if game["turn"] == "o" else "❌"
+    next_player = game["players"][game["turn"]]
+    await interaction.response.send_message(
+        f"{_board_view(game['board'])}\n"
+        f"<@{next_player}> to move ({next_mark}) — `/move 1-9`."
     )
 
 
@@ -1330,10 +1652,16 @@ def _remember_reply(interaction, answer, prompt):
 async def ask(interaction: discord.Interaction, prompt: str):
     if interaction.guild is None:
         await interaction.response.defer(thinking=True)
-        await dm_chat(interaction.channel, prompt[:400], host_cfg(),
-                      mention=interaction.user.mention,
-                      user_id=interaction.user.id, name=interaction.user.display_name)
-        await interaction.followup.send("▸ sent", ephemeral=True)
+        await interaction.followup.send("⏳ thinking…", ephemeral=True)
+        try:
+            await dm_chat(interaction.channel, prompt[:400], host_cfg(),
+                          mention=interaction.user.mention,
+                          user_id=interaction.user.id, name=interaction.user.display_name)
+        except Exception:  # noqa: BLE001 — never leave an interaction stuck
+            try:
+                await interaction.followup.send("```⚠️ Something went wrong. Try again in a moment.```", ephemeral=True)
+            except discord.HTTPException:
+                pass
         return
     cfg = guild_ai_config(interaction.guild.id)
     # /ask is an explicit, one-shot question: it never wakes conversation mode
@@ -1355,10 +1683,16 @@ async def ask(interaction: discord.Interaction, prompt: str):
         )
         return
     await interaction.response.defer(thinking=True)
+    # Resolve the deferred interaction right away so Discord never shows a
+    # stuck "thinking…"; the real reply still streams into the channel below.
+    await interaction.followup.send("⏳ thinking…", ephemeral=True)
 
-    context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
-    profiles = profile_lines(interaction.guild.id, [m.get("user_id") for m in context] + [interaction.user.id])
-    full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"], profiles)
+    try:
+        context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
+        profiles = profile_lines(interaction.guild.id, [m.get("user_id") for m in context] + [interaction.user.id])
+        full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"], profiles)
+    except Exception:
+        full_prompt = prompt[:400]
 
     async def factory():
         return await ask_ollama(
@@ -1372,20 +1706,32 @@ async def ask(interaction: discord.Interaction, prompt: str):
             answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
             await asyncio.sleep(0)
     except BusyError as exc:
-        await interaction.followup.send(str(exc))
+        await interaction.followup.send(str(exc), ephemeral=True)
         return
     except asyncio.TimeoutError:
-        await interaction.followup.send("The AI took too long. Try again in a moment.")
+        await interaction.followup.send("```The AI took too long. Try again in a moment.```", ephemeral=True)
         return
     except ConnectionError as exc:
-        await interaction.followup.send(f"⚠️ {exc}")
+        await interaction.followup.send(f"```⚠️ {exc}```", ephemeral=True)
         return
     except asyncio.CancelledError:
         raise
+    except Exception as exc:  # noqa: BLE001 — never leave an interaction stuck
+        try:
+            await interaction.followup.send(f"```⚠️ Something went wrong: {exc}```", ephemeral=True)
+        except discord.HTTPException:
+            pass
+        return
 
-    quota_tick(interaction.guild.id, cfg["window"])
-    _remember_reply(interaction, answer, prompt)
-    await human_type(interaction.channel, answer, mention=interaction.user.mention)
+    try:
+        quota_tick(interaction.guild.id, cfg["window"])
+        _remember_reply(interaction, answer, prompt)
+        await human_type(interaction.channel, answer, mention=interaction.user.mention)
+    except Exception:  # noqa: BLE001 — DB or send hiccup must not strand the user
+        try:
+            await interaction.followup.send(f"{interaction.user.mention} {answer[:1900]}", ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 PANEL_URL = os.environ.get("PANEL_URL", "https://admin.quaestio.online")
@@ -1455,6 +1801,14 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         return
     except ConnectionError as exc:
         await interaction.followup.send(f"⚠️ {exc}")
+        return
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — never leave an interaction stuck
+        try:
+            await interaction.followup.send(f"```⚠️ Something went wrong: {exc}```")
+        except discord.HTTPException:
+            pass
         return
 
     await interaction.followup.send(
@@ -1775,6 +2129,8 @@ async def tags(interaction: discord.Interaction):
 
 BDAY_GROUP = app_commands.Group(name="birthday", description="Birthday reminders")
 
+bot.tree.add_command(BDAY_GROUP)
+
 
 @BDAY_GROUP.command(name="set", description="Save your birthday (month/day).")
 @app_commands.describe(month="Birth month (1-12)", day="Birth day (1-31)")
@@ -1877,6 +2233,105 @@ async def birthday_loop():
             except Exception:
                 pass
         await asyncio.sleep(60)
+
+
+# ---------------------------------------------------------------------------
+# Optional localhost settings page (LOCAL_WEB=1 + LOCAL_WEB_PORT, off by default)
+# ---------------------------------------------------------------------------
+
+def _local_web() -> bool:
+    return os.environ.get("LOCAL_WEB", "0").strip() in ("1", "true", "yes", "on")
+
+
+def _serve_local_web():
+    """Tiny settings page bound to 127.0.0.1 only — the same settings the CLI
+    edits, but in a browser. Toggled on/off from the CLI (quaestio.py localweb).
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import urllib.parse
+
+    LOCAL_KEYS = [
+        ("OLLAMA_BASE_URL", "AI endpoint (Ollama URL)"),
+        ("OLLAMA_MODEL", "Model"),
+        ("OLLAMA_TIMEOUT", "AI timeout (seconds)"),
+        ("PREFIX", "Command prefix"),
+        ("WARN_LIMIT", "Auto-kick after warns"),
+    ]
+    conffile = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+    def _read_conf():
+        vals = {}
+        if os.path.isfile(conffile):
+            with open(conffile) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        vals[k] = v
+        return vals
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _html(self, vals, msg=""):
+            rows = "".join(
+                f"""<label>{label}
+                      <input name="{k}" value="{vals.get(k, '').replace(chr(34), '&quot;')}" autocomplete="off"></label>"""
+                for k, label in LOCAL_KEYS
+            )
+            return f"""<!doctype html><meta charset="utf-8">
+            <title>Quaestio — local settings</title>
+            <style>
+              body{{font-family:system-ui,sans-serif;background:#0e0e16;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}}
+              form{{background:#16161f;border:1px solid #2a2a3a;border-radius:14px;padding:28px;width:min(420px,90vw);display:flex;flex-direction:column;gap:12px}}
+              h1{{font-size:18px;margin:0 0 4px}}
+              p{{color:#888;margin:0 0 8px}}
+              label{{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#aaa}}
+              input{{padding:9px 10px;border-radius:8px;border:1px solid #333;background:#0e0e16;color:#eee;font-size:14px}}
+              button{{padding:11px;border-radius:8px;border:0;background:#6366f1;color:#fff;font-weight:600;font-size:14px;cursor:pointer}}
+              .msg{{color:#7ee787;font-size:13px}}
+              .hint{{font-size:12px;color:#666}}
+            </style>
+            <form method="post">
+              <h1>Quaestio · local settings</h1>
+              <p>Only reachable from this machine (127.0.0.1). Read + write the same settings file as the CLI.</p>
+              {"<p class='msg'>Saved.</p>" if msg else ""}
+              {rows}
+              <button>Save</button>
+              <span class="hint">Token is not shown here for safety — edit it with the CLI (quaestio.py settings).</span>
+            </form>"""
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(self._html(_read_conf()).encode())
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            data = urllib.parse.parse_qs(body)
+            vals = _read_conf()
+            for k, _label in LOCAL_KEYS:
+                if k in data:
+                    vals[k] = data[k][0].strip()
+            with open(conffile, "w") as f:
+                for k, v in vals.items():
+                    f.write(f"{k}={v}\n")
+            os.chmod(conffile, 0o600)
+            self.send_response(303)
+            self.send_header("Location", "/?saved=1")
+            self.end_headers()
+
+    port = int(os.environ.get("LOCAL_WEB_PORT", "8123"))
+    try:
+        ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    except OSError:
+        try:
+            ThreadingHTTPServer(("localhost", port), Handler).serve_forever()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------

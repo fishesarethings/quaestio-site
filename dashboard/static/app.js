@@ -112,15 +112,15 @@ function guildIcon(g) {
 function manageCard(g) {
   return `<button class="guild-card" data-id="${ESCAPED(g.id)}">
     ${guildIcon(g)}
-    <div class="guild-meta"><span class="guild-name">${ESCAPED(g.name)}</span><span class="guild-sub">Configure AI, welcomes &amp; more</span></div>
-    <span class="badge-tag ok">Managed</span>
+    <div class="guild-meta"><span class="guild-name">${ESCAPED(g.name)}</span></div>
+    <span class="badge-tag ok">⚙ Manage</span>
   </button>`;
 }
 
 function inviteCard(g) {
   return `<button class="guild-card invite" data-invite="${ESCAPED(g.invite_url)}">
     ${guildIcon(g)}
-    <div class="guild-meta"><span class="guild-name">${ESCAPED(g.name)}</span><span class="guild-sub">Quaestio isn't here yet</span></div>
+    <div class="guild-meta"><span class="guild-name">${ESCAPED(g.name)}</span></div>
     <span class="badge-tag accent">+ Invite</span>
   </button>`;
 }
@@ -128,7 +128,7 @@ function inviteCard(g) {
 function lockedCard(g) {
   return `<button class="guild-card locked" disabled>
     ${guildIcon(g)}
-    <div class="guild-meta"><span class="guild-name">${ESCAPED(g.name)}</span><span class="guild-sub">Need admin permissions to manage</span></div>
+    <div class="guild-meta"><span class="guild-name">${ESCAPED(g.name)}</span></div>
     <span class="badge-tag dim">Locked</span>
   </button>`;
 }
@@ -872,9 +872,9 @@ function renderWelcomePreview() {
 
 /* ---------- host view ---------- */
 const OS_CMDS = {
-  macos: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once. Start with ~/quaestio/run-quaestio.sh" },
-  linux: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Installs a systemd service that auto-starts on boot. Status: systemctl status quaestio" },
-  windows: { cmd: 'powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"', note: "Installs to %USERPROFILE%\\quaestio · asks for your bot token once. Start with run-quaestio.bat" },
+  macos: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once. Manage with ~/quaestio/bot/quaestio.py" },
+  linux: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Installs a systemd service that auto-starts on boot. Status: systemctl status quaestio · manage with ~/quaestio/bot/quaestio.py" },
+  windows: { cmd: 'powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"', note: "Installs to %USERPROFILE%\\quaestio · asks for your bot token once. Manage with quaestio.py" },
 };
 
 function applyHostModeUI(mode) {
@@ -911,16 +911,64 @@ async function renderHost() {
 
   const poolEl = $("#pool-list");
   try {
-    const pool = (await api("/api/host/pool")) || { contributors: [] };
+    const pool = (await api("/api/host/pool")) || { contributors: [], total_share: 0 };
     const list = pool.contributors || [];
-    poolEl.innerHTML = list.length
-      ? list.map((c) => `
+    const totalShare = pool.total_share || 0;
+    poolEl.innerHTML = `
+      <div class="pool-stat-line">${list.filter((c) => c.enabled).length} contributor${list.filter((c) => c.enabled).length === 1 ? "" : "s"} · ${totalShare}% shared</div>
+      <form class="pool-add" id="pool-add">
+        <input type="text" id="pool-name" placeholder="Name (e.g. Jeff)" autocomplete="off">
+        <input type="text" id="pool-endpoint" placeholder="http://ip:11434" autocomplete="off">
+        <select id="pool-share">
+          <option value="10">10%</option><option value="25">25%</option>
+          <option value="50" selected>50%</option><option value="75">75%</option><option value="100">100%</option>
+        </select>
+        <button class="btn btn-primary" type="submit">Add</button>
+      </form>
+      ${list.length ? list.map((c) => `
         <div class="pool-row">
-          <span class="pool-name">@<abbr title="${ESCAPED(c.guild_id)}">${ESCAPED(c.guild_id)}</abbr></span>
+          <span class="pool-name">${ESCAPED(c.name || "contributor")}</span>
           <span class="pool-model">${ESCAPED(c.model || "default model")}</span>
-          <span class="pool-window">${ESCAPED(c.endpoint.split("//")[1] || c.endpoint)} · ${c.window}h windows</span>
+          <span class="pool-window">${ESCAPED((c.endpoint || "").split("//")[1] || c.endpoint)}</span>
+          <select class="pool-share-edit" data-id="${c.id}">
+            ${[10, 25, 50, 75, 100].map((v) => `<option value="${v}" ${Number(c.share) === v ? "selected" : ""}>${v}%</option>`).join("")}
+          </select>
+          <label class="switch small"><input type="checkbox" class="pool-enable" data-id="${c.id}" ${c.enabled ? "checked" : ""}><span></span></label>
+          <button class="btn btn-ghost btn-xs" data-rem="${c.id}">Remove</button>
         </div>`).join("")
-      : '<p class="muted">No servers in the pool yet. Any server that self-hosts can opt in from its AI settings.</p>';
+      : '<p class="muted">No contributors yet. Add the first Ollama box above — anyone with an Ollama box can lend compute to the pool.</p>'}`;
+
+    const addForm = $("#pool-add");
+    if (addForm) {
+      addForm.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const name = $("#pool-name").value.trim();
+        const endpoint = $("#pool-endpoint").value.trim();
+        if (!endpoint) { toast("✗ Endpoint is required"); return; }
+        api("/api/host/pool", { name, endpoint, model: s.ai_model || "", share: $("#pool-share").value })
+          .then(() => { toast("✓ Contributor added to the pool"); renderHost(); })
+          .catch((e) => toast("✗ " + e));
+      });
+    }
+    $$(".pool-share-edit").forEach((sel) =>
+      sel.addEventListener("change", () =>
+        api(`/api/host/pool/${sel.dataset.id}`, { share: sel.value })
+          .then(renderHost).catch(() => toast("✗ Couldn't update share"))
+      )
+    );
+    $$(".pool-enable").forEach((cb) =>
+      cb.addEventListener("change", () =>
+        api(`/api/host/pool/${cb.dataset.id}`, { enabled: cb.checked })
+          .then(renderHost).catch(() => toast("✗ Couldn't update contributor"))
+      )
+    );
+    $$("[data-rem]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        if (!confirm("Remove this contributor from the pool?")) return;
+        api(`/api/host/pool/${btn.dataset.rem}`, null, "DELETE")
+          .then(renderHost).catch(() => toast("✗ Couldn't remove"));
+      })
+    );
   } catch {
     poolEl.innerHTML = '<p class="muted">Could not load the pool.</p>';
   }
@@ -976,6 +1024,32 @@ function wireEvents() {
       $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + t.dataset.tab));
     })
   );
+
+  const settingsSearch = $("#settings-search");
+  if (settingsSearch) {
+    settingsSearch.addEventListener("input", () => {
+      const q = settingsSearch.value.trim().toLowerCase();
+      $$(".card, .panel-intro").forEach((el) => {
+        const show = !q || (el.textContent || "").toLowerCase().includes(q);
+        el.classList.toggle("filtered-out", !show);
+      });
+      if (!q) {
+        $$(".filtered-out").forEach((el) => el.classList.remove("filtered-out"));
+      } else {
+        $$(".tab").forEach((t) => {
+          const panel = $("#panel-" + t.dataset.tab);
+          if (!panel) return;
+          const scope = [...panel.querySelectorAll(".card, .panel-intro")];
+          const visible = scope.some((el) => (el.textContent || "").toLowerCase().includes(q));
+          t.classList.toggle("hidden", !visible);
+          if (!visible && t.classList.contains("active")) {
+            const first = $$(".tab").find((x) => !x.classList.contains("hidden"));
+            if (first) first.click();
+          }
+        });
+      }
+    });
+  }
 
   $("#refresh-models").addEventListener("click", () => populateModels("#ai_model", activeGuild.id, "ai_model", $("#ai_model").value));
   $("#welcome_message").addEventListener("input", renderWelcomePreview);

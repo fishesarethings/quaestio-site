@@ -14,15 +14,17 @@ The custom domain **quaestio.online** is live, served through Cloudflare → Git
 
 Quaestio is a small Discord bot that runs a tiny local AI model on the server owner's own hardware. It answers one conversation at a time, typed out like a person — with no cloud, no API bills, and no subscriptions. Ever.
 
-Alongside the AI it ships 29 slash commands:
+Alongside the AI it ships 41 slash commands:
 
 | Area | Commands |
 |---|---|
-| 🤖 AI | `/ask` `/summarize` `/ai model` `/ai toggle` `/ai status` `/panel` |
-| 🏆 Levels | `/rank` `/top` |
+| 🤖 AI | `/ask` `/summarize` `/ai model` `/ai toggle` `/ai status` `/ai clear` `/ai personality` `/ai character` `/panel` |
+| 🎮 Games | `/8ball` `/dice` `/coin` `/rps` `/trivia` `/answer` `/slot` `/tictactoe` `/move` |
+| 🏆 Levels | `/rank` `/profile` `/leaderboard` |
 | 🛡️ Moderation | `/warn` `/warns` `/delwarns` `/kick` `/ban` `/unban` `/purge` `/mute` `/unmute` |
 | 🏷️ Tags | `/tag` `/tagcreate` `/tagdelete` `/tags` |
-| 🧭 Core | `/ping` `/uptime` `/about` `/invite` `/8ball` |
+| 🎂 Birthdays | `/birthday set` `/birthday list` `/birthday remove` |
+| 🧭 Core | `/ping` `/uptime` `/about` `/invite` |
 
 The `/ai` settings are **admin-only** — a server admin can pick from the models
 on their configured AI host (`/ai model` autocompletes from a live scan), or

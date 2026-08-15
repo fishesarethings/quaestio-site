@@ -93,6 +93,12 @@ def db_init():
         );
         CREATE TABLE IF NOT EXISTS warned (
             guild_id TEXT, user_id TEXT, reason TEXT, at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS hosters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, endpoint TEXT, model TEXT,
+            share INTEGER DEFAULT 50, enabled INTEGER DEFAULT 1,
+            added_by TEXT, at TEXT
         );"""
     )
     cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
@@ -395,7 +401,7 @@ async def api_refs(request: Request, guild_id: int):
 
 @app.get("/api/guilds/{guild_id}/models")
 async def api_models(request: Request, guild_id: int):
-    session_user(request)
+    require_admin_guild(request, guild_id)
     managed = get_cfg("host", "host_mode", "managed") != "decentral"
     endpoint = model_fallback(guild_id)
     try:
@@ -471,7 +477,7 @@ def effective_ai_limits(guild_id):
 
 @app.get("/api/guilds/{guild_id}/settings")
 async def api_get_settings(request: Request, guild_id: int):
-    session_user(request)
+    require_admin_guild(request, guild_id)
     settings = {k: get_cfg(guild_id, k, "") for k in SETTING_KEYS}
     managed = get_cfg("host", "host_mode", "managed") != "decentral"
     settings["host_mode"] = "managed" if managed else "decentral"
@@ -580,28 +586,60 @@ async def api_host_pool(request: Request):
     await require_host_admin(request)
     conn = db()
     rows = conn.execute(
-        "SELECT guild_id, value FROM config WHERE key='ai_contribute'"
+        "SELECT id, name, endpoint, model, share, enabled FROM hosters ORDER BY name"
     ).fetchall()
-    contribute = {
-        r["guild_id"] for r in rows
-        if str(r["value"]).strip().lower() not in ("", "0", "false", "none")
-    }
-    out = []
-    for gid in sorted(contribute):
-        out.append({
-            "guild_id": gid,
-            "endpoint": get_cfg(gid, "ai_endpoint", ""),
-            "model": get_cfg(gid, "ai_model", ""),
-            "window": get_cfg(gid, "ai_window", "6"),
-            "name": gid,
-        })
     conn.close()
-    return {"contributors": out}
+    return {"contributors": [dict(r) for r in rows],
+            "total_share": sum(int(r["share"]) for r in rows if r["enabled"])}
+
+
+@app.post("/api/host/pool")
+async def api_host_pool_add(request: Request):
+    await require_host_admin(request)
+    body = await request.json()
+    name = (body.get("name") or "").strip() or "contributor"
+    endpoint = (body.get("endpoint") or "").strip()
+    if not endpoint:
+        raise HTTPException(400, "Endpoint is required")
+    model = (body.get("model") or "").strip() or "qwen2.5:0.5b"
+    share = max(0, min(100, int(body.get("share", 50) or 50)))
+    conn = db()
+    conn.execute(
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?, ?, ?, ?, 1, 'dash', ?)",
+        (name, endpoint, model, share, datetime.datetime.now(datetime.timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/host/pool/{hoster_id}")
+async def api_host_pool_update(request: Request, hoster_id: int):
+    await require_host_admin(request)
+    body = await request.json()
+    conn = db()
+    if "enabled" in body:
+        conn.execute("UPDATE hosters SET enabled=? WHERE id=?", (1 if body.get("enabled") else 0, hoster_id))
+    if "share" in body and "share_delta" not in body:
+        conn.execute("UPDATE hosters SET share=? WHERE id=?", (max(0, min(100, int(body.get("share", 0) or 0))), hoster_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/host/pool/{hoster_id}")
+async def api_host_pool_delete(request: Request, hoster_id: int):
+    await require_host_admin(request)
+    conn = db()
+    conn.execute("DELETE FROM hosters WHERE id=?", (hoster_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.post("/api/guilds/{guild_id}/settings")
 async def api_set_settings(request: Request, guild_id: int):
-    session_user(request)
+    require_admin_guild(request, guild_id)
     body = await request.json()
     for key, value in body.items():
         if key in SETTING_KEYS and value is not None:
@@ -716,7 +754,7 @@ def preset_bundle(guild_id, kind):
 
 @app.get("/api/guilds/{guild_id}/presets/{kind}")
 async def api_get_presets(request: Request, guild_id: int, kind: str):
-    session_user(request)
+    require_admin_guild(request, guild_id)
     if kind not in ("personality", "character"):
         raise HTTPException(400, "kind must be personality or character")
     return {

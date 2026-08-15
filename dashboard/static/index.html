@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=16">
+<link rel="stylesheet" href="/static/style.css?v=17">
 </head>
 <body>
 
@@ -65,6 +65,10 @@
         <h2 id="settings-guild-name"></h2>
         <span class="pill" id="guild-status"></span>
       </div>
+    </div>
+
+    <div class="settings-search" role="search">
+      <input type="search" id="settings-search" placeholder="Search settings… (e.g. model, quota, warns, emoji)" autocomplete="off" autofocus>
     </div>
 
     <div class="tabs" id="tabs" role="tablist">
@@ -793,7 +797,7 @@
         </span>
         <div>
           <h3>Self-host Quaestio</h3>
-          <p>The bot + AI install in one command on any platform. Pick yours:</p>
+          <p>One command installs the bot + a friendly manager on any platform. No admin needed.</p>
         </div>
       </div>
       <div class="seg seg-tabs" id="os-seg">
@@ -805,6 +809,30 @@
       <div class="code-block" id="os-cmd">
         <pre><code>curl -fsSL https://quaestio.online/bot/install.sh | bash</code></pre>
         <div class="code-bar" id="os-cmd-note">Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once.</div>
+      </div>
+
+      <div class="selfhost-grid">
+        <div class="selfhost-card">
+          <h4>🧭 The manager (CLI)</h4>
+          <p class="muted">After installing, open the friendly menu any time — update, settings, uninstall, pool, local web panel:</p>
+          <div class="code-block">
+            <pre><code>python3 ~/quaestio/bot/quaestio.py</code></pre>
+          </div>
+          <p class="muted">…or one-liners: <code>quaestio.py status</code>, <code>settings</code>, <code>contribute</code>, <code>update</code>, <code>uninstall</code>. Type <code>help</code> for the list.</p>
+        </div>
+        <div class="selfhost-card">
+          <h4>⚡ Contribute to the pool</h4>
+          <p class="muted">Running home server AI? Opt in and pick how much of your box to lend — other servers can then use it. Everyone sets their own share; the more contributors, the bigger the pool.</p>
+          <div class="code-block">
+            <pre><code>python3 ~/quaestio/bot/quaestio.py contribute</code></pre>
+          </div>
+          <p class="muted">Asks for your Ollama URL + model + share % and registers it here. Uninstall removes your contribution too.</p>
+        </div>
+      </div>
+
+      <div class="selfhost-card">
+        <h4>🧹 Nothing left behind</h4>
+        <p class="muted"><code>quaestio.py uninstall</code> stops the bot, removes the service, the keyfile and the whole <code>~/quaestio</code> folder. Most apps can't say that.</p>
       </div>
     </div>
 
@@ -824,6 +852,6 @@ uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
 
 <div class="toast" id="toast"></div>
 <script src="/static/emoji-data.js?v=1"></script>
-<script src="/static/app.js?v=15"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>

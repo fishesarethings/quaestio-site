@@ -90,6 +90,7 @@ if [[ ! -f "$BOT_DIR/bot.py" ]]; then
   BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
   curl -fsSL "$BASE/bot.py" -o "$BOT_DIR/bot.py" || die "Could not download bot.py (check your network)."
   curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
+  curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
   curl -fsSL "$BASE/requirements.txt" -o "$BOT_DIR/requirements.txt"
   curl -fsSL "$BASE/.env.example" -o "$BOT_DIR/.env.example" || true
 else
@@ -100,7 +101,13 @@ else
     BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
     curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
   fi
+  if [[ ! -f "$BOT_DIR/quaestio.py" ]]; then
+    say "Fetching the manage tool (quaestio.py)…"
+    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+    curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
+  fi
 fi
+chmod +x "$BOT_DIR/quaestio.py" 2>/dev/null || true
 
 # --- 3. Virtualenv + deps ------------------------------------------------------
 if [[ ! -x "$VENV/bin/python" ]]; then
@@ -210,3 +217,8 @@ EOF
 fi
 
 say "Everything ready. Your AI brain: local Ollama ($MODEL). Nothing is cloud-hosted."
+say ""
+say "Manage it anytime (settings, update, uninstall, pool contribution):"
+say "    python3 \"$BOT_DIR/quaestio.py\""
+say "Or start fresh:"
+say "    python3 \"$BOT_DIR/quaestio.py\" help"

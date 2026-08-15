@@ -34,6 +34,7 @@ if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
     Say "Downloading Quaestio bot code…"
     Invoke-WebRequest -Uri "$base/bot.py" -OutFile (Join-Path $BotDir "bot.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
+    Invoke-WebRequest -Uri "$base/quaestio.py" -OutFile (Join-Path $BotDir "quaestio.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/requirements.txt" -OutFile (Join-Path $BotDir "requirements.txt") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/.env.example" -OutFile (Join-Path $BotDir ".env.example") -UseBasicParsing
 } else {
@@ -42,6 +43,11 @@ if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
         $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
         Say "Fetching config.py…"
         Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
+    }
+    if (-not (Test-Path (Join-Path $BotDir "quaestio.py"))) {
+        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        Say "Fetching the manage tool (quaestio.py)…"
+        Invoke-WebRequest -Uri "$base/quaestio.py" -OutFile (Join-Path $BotDir "quaestio.py") -UseBasicParsing
     }
 }
 
@@ -123,3 +129,6 @@ if (-not $task) {
 Say "Done!"
 Say "Start Quaestio with:  $runBat"
 Say "(On a server PC you can leave it running; one chat at a time keeps it light.)"
+Say "Manage it anytime (settings, update, uninstall, pool contribution):"
+Say "    python (Join-Path $BotDir 'quaestio.py')"
+Say "…or type 'help' inside the manager for one-liners like status / update / uninstall."
