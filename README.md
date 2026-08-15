@@ -33,6 +33,10 @@ Server admins can manage everything from the **web panel** at
 instructions, memory, per-server AI quota, welcome messages, level role and the
 warn-kick limit — with live previews and saved **encrypted at rest**.
 
+The dashboard also has a **Host** tab for self-hosters: set the default AI host,
+model, memory and per-server quota that apply to every server that doesn't
+override them, plus live host stats (RAM, disk, CPU, Ollama status).
+
 ## Site
 
 This repo is the marketing / legal site for the bot **and** the bot's code (in `bot/`). Pure HTML + CSS + vanilla JS — no build step, no framework.
@@ -114,6 +118,48 @@ dashboard/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8900
 
 Register `https://admin.quaestio.online/auth/callback` (or your tunnel URL) as
 a Redirect in the Discord Developer Portal → OAuth2, scopes `identify guilds`.
+
+### Self-hosting on Windows (full — bot + AI + web panel)
+
+Three machines can each run a piece (bot, model, panel) — they don't have to be
+the same one. The easy single-command path installs the **bot** and the **AI**:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"
+```
+
+That downloads Python + the bot, creates `%USERPROFILE%\.quaestio\keyfile`
+for encrypted storage, pulls a small model into Ollama, and registers a startup
+task (`run-quaestio.bat` in the install folder to start it manually). It does
+**not** install the web panel by default — the dashboard is optional.
+
+To also run the **admin web panel** on Windows:
+
+```powershell
+cd bot
+pip install -r dashboard/requirements.txt      # or: cd dashboard; pip install -r requirements.txt
+set DISCORD_CLIENT_ID=YOUR_APP_ID
+set DISCORD_CLIENT_SECRET=YOUR_CLIENT_SECRET
+set DISCORD_REDIRECT_URI=http://127.0.0.1:8900/auth/callback
+set SECRET_KEY=generate-a-random-string
+set DB_PATH=%CD%\..\bot\quaestio.db
+cd dashboard
+python -m uvicorn app:app --host 127.0.0.1 --port 8900
+```
+
+Open `http://127.0.0.1:8900` and sign in. Register
+`http://127.0.0.1:8900/auth/callback` as a Redirect in the Discord portal
+(OAuth2 → General). Everything — bot, models, panel, DB, key — lives on your
+Windows machine; nothing goes to the cloud. For a public URL instead of
+`localhost`, run `cloudflared tunnel --url http://127.0.0.1:8900` and register
+that URL as the redirect instead.
+
+### Host defaults (self-host quota etc.)
+Open the dashboard's **Host** tab to set machine-wide defaults: the default
+Ollama URL, default model, default memory and a default AI calls/hour quota.
+The bot reads these whenever a server hasn't set its own value, so one chatty
+server can't hog a shared model box. Host values are stored encrypted like
+everything else.
 
 ### Weak-host friendliness
 - One AI call at a time — a fair queue round-robins across servers, and says

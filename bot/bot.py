@@ -171,13 +171,14 @@ async def ask_ollama(endpoint: str, model: str, prompt: str) -> str:
 
 def guild_ai_config(guild_id):
     """Per-server AI settings (admin-overridable via web UI) merged over defaults."""
+    host = lambda k, d: get_cfg("host", k, d)  # self-host defaults set in the web panel
     return {
-        "endpoint": get_cfg(guild_id, "ai_endpoint", OLLAMA_BASE_URL),
-        "model": get_cfg(guild_id, "ai_model", OLLAMA_MODEL),
-        "memory": int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT)),
+        "endpoint": get_cfg(guild_id, "ai_endpoint", host("ai_endpoint", OLLAMA_BASE_URL)),
+        "model": get_cfg(guild_id, "ai_model", host("ai_model", OLLAMA_MODEL)),
+        "memory": int(get_cfg(guild_id, "ai_memory", host("ai_memory", MEMORY_DEFAULT))),
         "enabled": get_cfg(guild_id, "ai_enabled", "1") != "0",
         "instructions": get_cfg(guild_id, "ai_instructions", ""),
-        "quota": int(get_cfg(guild_id, "ai_quota", "0")),  # AI calls per hour, 0=unlimited
+        "quota": int(get_cfg(guild_id, "ai_quota", host("ai_quota", "0"))),  # calls/hr, 0=unlimited
     }
 
 

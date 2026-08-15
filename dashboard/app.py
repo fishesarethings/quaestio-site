@@ -15,8 +15,10 @@ Env:
 
 import json
 import os
-import sys
+import shutil
 import sqlite3
+import sys
+import urllib.parse
 import urllib.request
 
 import httpx
@@ -157,7 +159,8 @@ def admin_guilds(user: dict) -> list:
 @app.get("/auth/login")
 async def auth_login():
     return RedirectResponse(
-        f"{OAUTH_AUTH}?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+        f"{OAUTH_AUTH}?client_id={CLIENT_ID}"
+        f"&redirect_uri={urllib.parse.quote(REDIRECT_URI, safe='')}"
         f"&response_type=code&scope={SCOPES}"
     )
 
@@ -191,14 +194,21 @@ async def api_me(request: Request):
     return {"user": user["user"], "guilds": admin_guilds(user)}
 
 
-def _model_default():
-    return get_cfg("default", "ai_model", "")
+HOST_ID = "host"
+
+
+def host_default(key, default=None):
+    return get_cfg(HOST_ID, key, default)
+
+
+def model_fallback(guild_id):
+    return get_cfg(guild_id, "ai_endpoint", host_default("ai_endpoint", OLLAMA_BASE_URL))
 
 
 @app.get("/api/guilds/{guild_id}/models")
 async def api_models(request: Request, guild_id: int):
     session_user(request)
-    endpoint = get_cfg(guild_id, "ai_endpoint", OLLAMA_BASE_URL)
+    endpoint = model_fallback(guild_id)
     try:
         with urllib.request.urlopen(f"{endpoint}/api/tags", timeout=6) as resp:
             data = json.loads(resp.read().decode())
@@ -235,6 +245,59 @@ async def api_set_settings(request: Request, guild_id: int):
         if key in allowed and value is not None:
             set_cfg(guild_id, key, value)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Host / self-host settings (applied as defaults by the bot)
+# ---------------------------------------------------------------------------
+
+HOST_KEYS = ["ai_endpoint", "ai_model", "ai_memory", "ai_quota"]
+
+
+@app.get("/api/host/settings")
+async def api_get_host(request: Request):
+    session_user(request)
+    return {k: get_cfg(HOST_ID, k, "") for k in HOST_KEYS}
+
+
+@app.post("/api/host/settings")
+async def api_set_host(request: Request):
+    session_user(request)
+    body = await request.json()
+    for key, value in body.items():
+        if key in HOST_KEYS and value is not None:
+            set_cfg(HOST_ID, key, value)
+    return {"ok": True}
+
+
+@app.get("/api/host/stats")
+async def api_host_stats(request: Request):
+    session_user(request)
+    stats = {"ollama": False, "models": []}
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=6) as resp:
+            data = json.loads(resp.read().decode())
+        stats["ollama"] = True
+        stats["models"] = [m["name"] for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            meminfo = dict(line.split(":", 1) for line in f)
+        stats["mem_total"] = int(meminfo["MemTotal"].split()[0]) * 1024
+        stats["mem_avail"] = int(meminfo["MemAvailable"].split()[0]) * 1024
+        stats["mem_pct"] = round(100 * (1 - stats["mem_avail"] / stats["mem_total"]))
+        with open("/proc/loadavg") as f:
+            stats["cpu_pct"] = round(float(f.read().split()[0]) * 100 / os.cpu_count())
+    except Exception:
+        pass
+    try:
+        total, _, _ = shutil.disk_usage("/")
+        stats["disk_total"] = total
+    except Exception:
+        pass
+    stats["model_count"] = len(stats["models"])
+    return stats
 
 
 # ---------------------------------------------------------------------------

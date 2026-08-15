@@ -3,132 +3,227 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Quaestio admin — manage your AI settings, custom instructions, welcomes and more.">
 <title>Quaestio · Admin</title>
+<link rel="icon" href="https://quaestio.online/assets/logo-512.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="topbar">
-  <div class="brand">⚡ Quaestio <span>admin</span></div>
-  <div id="topbar-user" class="topbar-user"></div>
+
+<div class="bg" aria-hidden="true">
+  <div class="blob blob-a"></div>
+  <div class="blob blob-b"></div>
+  <div class="blob blob-c"></div>
+  <div class="grid-overlay"></div>
+  <div class="vignette"></div>
 </div>
 
-<main id="app" class="app">
-  <!-- Not signed in -->
-  <section id="login-view" class="card center hidden">
-    <h1>Quaestio admin</h1>
-    <p class="muted">Manage AI settings, custom instructions, welcomes and more for servers where you're an admin.</p>
-    <a class="btn" href="/auth/login">Sign in with Discord</a>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="https://quaestio.online/assets/logo-512.png" alt="Quaestio">
+    <span>Quaestio</span>
+    <em>admin</em>
+  </a>
+  <nav class="links" id="nav-links"></nav>
+  <div id="nav-user"></div>
+</header>
+
+<main id="app">
+
+  <!-- Logged out -->
+  <section id="login-view" class="hero center hidden">
+    <div class="badge"><span class="dot"></span> Server admin panel</div>
+    <h1>Run your server.<br><span class="grad">From the web.</span></h1>
+    <p class="lead">Manage the AI, custom instructions, welcomes, levels and moderation — with live previews and encrypted storage. Only you, the server admins, can see your servers.</p>
+    <div class="cta center-cta">
+      <a class="btn btn-primary btn-lg" href="/auth/login">Sign in with Discord</a>
+    </div>
     <p id="login-error" class="error hidden"></p>
   </section>
 
   <!-- Server picker -->
   <section id="picker-view" class="hidden">
-    <h1>Your servers</h1>
-    <p class="muted">Pick a server to manage.</p>
-    <div id="guild-list" class="guild-list"></div>
+    <div class="section-head">
+      <h2>Your servers</h2>
+      <p>Pick a server to manage its AI, welcomes, levels and moderation.</p>
+    </div>
+    <div id="guild-list" class="guild-grid"></div>
   </section>
 
   <!-- Settings -->
   <section id="settings-view" class="hidden">
-    <div class="settings-head">
-      <button id="back-btn" class="btn-ghost">← All servers</button>
-      <h1 id="settings-guild-name"></h1>
+    <div class="crumb">
+      <a href="#" id="back-btn">← All servers</a>
+      <h2 id="settings-guild-name"></h2>
     </div>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="ai">AI</button>
-      <button class="tab" data-tab="welcome">Welcome</button>
-      <button class="tab" data-tab="levels">Levels</button>
-      <button class="tab" data-tab="moderation">Moderation</button>
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="ai">🤖 AI</button>
+      <button class="tab" data-tab="welcome">👋 Welcome</button>
+      <button class="tab" data-tab="levels">🏆 Levels</button>
+      <button class="tab" data-tab="moderation">🛡️ Moderation</button>
     </div>
 
-    <!-- AI tab -->
+    <!-- AI -->
     <div class="tab-panel active" id="panel-ai">
       <div class="card">
-        <label class="switch-row">
-          <span><strong>AI chat</strong><br><small>Allow members to talk to the AI in this server.</small></span>
-          <input type="checkbox" id="ai_enabled">
-        </label>
+        <div class="switch-row">
+          <div>
+            <h3>AI chat</h3>
+            <p class="muted">Allow members to talk to the AI on this server.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="ai_enabled"><span></span></label>
+        </div>
       </div>
 
       <div class="card">
         <label for="ai_endpoint">AI host (Ollama)</label>
-        <input type="text" id="ai_endpoint" placeholder="http://127.0.0.1:11434">
-        <p class="hint">You can self-host your own model server and point at it here. Defaults to the bot's host.</p>
+        <div class="input-wrap">
+          <input type="text" id="ai_endpoint" placeholder="http://127.0.0.1:11434" autocomplete="off">
+          <button id="refresh-models" class="btn btn-ghost" title="Scan models on this host">↻</button>
+        </div>
+        <p class="hint">Self-host your own model box and point at it here, or leave blank for the host default.</p>
 
         <label for="ai_model">Model</label>
-        <div class="model-row">
-          <select id="ai_model"></select>
-          <button id="refresh-models" class="btn-ghost">↻ Scan</button>
-        </div>
+        <select id="ai_model" class="model-select"></select>
         <p id="model-scan-status" class="hint"></p>
 
-        <label for="ai_memory">Memory (turns remembered per channel)</label>
-        <input type="number" id="ai_memory" min="1" max="12">
-
-        <label for="ai_quota">AI calls per hour (0 = unlimited)</label>
-        <input type="number" id="ai_quota" min="0">
-
-        <label for="ai_instructions">Custom instructions</label>
-        <textarea id="ai_instructions" rows="6"
-          placeholder="e.g. Always answer in short, friendly messages. Never mention you are an AI."></textarea>
-        <p class="hint">Stored encrypted. These guide how the AI behaves on this server and override its default persona.</p>
+        <div class="grid-2">
+          <div>
+            <label for="ai_memory">Memory (turns / channel)</label>
+            <input type="number" id="ai_memory" min="1" max="12">
+          </div>
+          <div>
+            <label for="ai_quota">AI calls per hour <span class="muted-2">(0 = unlimited)</span></label>
+            <input type="number" id="ai_quota" min="0">
+          </div>
+        </div>
       </div>
 
       <div class="card">
-        <button id="save-ai" class="btn">Save AI settings</button>
-        <span id="save-status-ai" class="save-status"></span>
+        <label for="ai_instructions">Custom instructions</label>
+        <textarea id="ai_instructions" rows="7"
+          placeholder="e.g. Always answer in short, friendly messages. Never mention you are an AI."></textarea>
+        <p class="hint">Stored <b>encrypted</b>. These guide how the AI behaves on this server and override its default persona.</p>
+        <div class="card-actions">
+          <button id="save-ai" class="btn btn-primary">Save AI settings</button>
+          <span id="save-status-ai" class="save-status"></span>
+        </div>
       </div>
     </div>
 
-    <!-- Welcome tab -->
+    <!-- Welcome -->
     <div class="tab-panel" id="panel-welcome">
       <div class="card">
-        <label class="switch-row">
-          <span><strong>Welcome messages</strong><br><small>Greet new members automatically.</small></span>
-          <input type="checkbox" id="welcome_enabled">
-        </label>
+        <div class="switch-row">
+          <div>
+            <h3>Welcome messages</h3>
+            <p class="muted">Greet new members automatically.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="welcome_enabled"><span></span></label>
+        </div>
       </div>
       <div class="card">
         <label for="welcome_channel">Channel ID</label>
-        <input type="text" id="welcome_channel" placeholder="e.g. 123456789012345678">
+        <input type="text" id="welcome_channel" placeholder="e.g. 123456789012345678" autocomplete="off">
         <label for="welcome_message">Message</label>
         <textarea id="welcome_message" rows="3" placeholder="Welcome {member}! 🎉"></textarea>
         <p class="hint">Use <code>{member}</code> for the new member's name, <code>{guild}</code> for the server name.</p>
         <div class="preview">
-          <p class="preview-title">Preview</p>
-          <div id="welcome-preview" class="preview-box">👋</div>
+          <p class="preview-title">Live preview</p>
+          <div id="welcome-preview" class="preview-box"></div>
         </div>
-        <button id="save-welcome" class="btn">Save welcome settings</button>
-        <span id="save-status-welcome" class="save-status"></span>
+        <div class="card-actions">
+          <button id="save-welcome" class="btn btn-primary">Save welcome settings</button>
+          <span id="save-status-welcome" class="save-status"></span>
+        </div>
       </div>
     </div>
 
-    <!-- Levels tab -->
+    <!-- Levels -->
     <div class="tab-panel" id="panel-levels">
       <div class="card">
-        <label for="levelrole">Role granted on level-up (role ID, or empty)</label>
-        <input type="text" id="levelrole" placeholder="Role ID">
+        <label for="levelrole">Role granted on level-up <span class="muted-2">(role ID, or empty)</span></label>
+        <input type="text" id="levelrole" placeholder="Role ID" autocomplete="off">
         <p class="hint">XP levels are tracked automatically. Set a role ID to auto-assign it on every level up.</p>
-        <button id="save-levels" class="btn">Save level settings</button>
-        <span id="save-status-levels" class="save-status"></span>
+        <div class="card-actions">
+          <button id="save-levels" class="btn btn-primary">Save level settings</button>
+          <span id="save-status-levels" class="save-status"></span>
+        </div>
       </div>
     </div>
 
-    <!-- Moderation tab -->
+    <!-- Moderation -->
     <div class="tab-panel" id="panel-moderation">
       <div class="card">
         <label for="warnlimit">Warnings before auto-kick</label>
         <input type="number" id="warnlimit" min="1" max="20">
-        <button id="save-moderation" class="btn">Save moderation settings</button>
-        <span id="save-status-moderation" class="save-status"></span>
+        <div class="card-actions">
+          <button id="save-moderation" class="btn btn-primary">Save moderation settings</button>
+          <span id="save-status-moderation" class="save-status"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Host (self-host config) -->
+  <section id="host-view" class="hidden">
+    <div class="section-head">
+      <h2>Host settings</h2>
+      <p>Defaults applied to every server that doesn't override them. Everything is stored encrypted on this machine.</p>
+    </div>
+
+    <div class="card">
+      <h3>Host stats</h3>
+      <div id="host-stats" class="stats-row"></div>
+    </div>
+
+    <div class="card">
+      <label for="host_endpoint">Default AI host (Ollama URL)</label>
+      <input type="text" id="host_endpoint" placeholder="http://127.0.0.1:11434" autocomplete="off">
+      <label for="host_model">Default model</label>
+      <select id="host_model" class="model-select"></select>
+      <p id="host-model-status" class="hint"></p>
+      <div class="grid-2">
+        <div>
+          <label for="host_memory">Default memory (turns)</label>
+          <input type="number" id="host_memory" min="1" max="12">
+        </div>
+        <div>
+          <label for="host_quota">Default AI calls / hour</label>
+          <input type="number" id="host_quota" min="0">
+        </div>
+      </div>
+      <p class="hint">Servers can override these individually. The quota stops one chatty server from hogging a shared host.</p>
+      <div class="card-actions">
+        <button id="save-host" class="btn btn-primary">Save host defaults</button>
+        <span id="save-status-host" class="save-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Self-host on Windows</h3>
+      <p class="muted">The bot and this panel both run on Windows. Open PowerShell and paste:</p>
+      <div class="code-block">
+        <pre><code>powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"</code></pre>
+        <div class="code-bar">Then start with: <b>run-quaestio.bat</b></div>
+      </div>
+      <p class="muted" style="margin-top:14px">Want the web panel on Windows too?</p>
+      <div class="code-block">
+        <pre><code>pip install -r dashboard/requirements.txt
+set DISCORD_CLIENT_ID=...
+set DISCORD_CLIENT_SECRET=...
+uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
+        <div class="code-bar">See README → “Admin web panel” for full setup.</div>
       </div>
     </div>
   </section>
 </main>
 
+<div class="toast" id="toast"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>
