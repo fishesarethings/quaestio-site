@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=14">
+<link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
 
@@ -28,6 +28,7 @@
     <em>admin</em>
   </a>
   <nav class="links" id="nav-links"></nav>
+  <a class="btn btn-ghost btn-feedback" href="https://github.com/fishesarethings/quaestio-site/issues" target="_blank" rel="noopener" title="Share feedback or report a bug">💬 Feedback</a>
   <div id="nav-user"></div>
 </header>
 
@@ -183,7 +184,14 @@
             <h5>Add / edit personalities</h5>
             <div class="preset-form">
               <input type="text" id="preset-personality-name" placeholder="Title, e.g. Sassy raccoon" maxlength="60">
-              <textarea id="preset-personality-text" rows="2" placeholder="Prompt, e.g. You are a sassy raccoon who roasts people lovingly." maxlength="2000"></textarea>
+              <div class="preset-form-row">
+                <div class="preset-emoji-pick">
+                  <label>Emoji</label>
+                  <button type="button" id="preset-personality-emoji-btn" class="preset-emoji-btn" aria-haspopup="listbox" aria-label="Pick an emoji">✨</button>
+                  <div class="preset-emoji-grid hidden" id="preset-personality-emoji-grid"></div>
+                </div>
+                <textarea id="preset-personality-text" rows="2" placeholder="Prompt, e.g. You are a sassy raccoon who roasts people lovingly." maxlength="2000"></textarea>
+              </div>
               <div class="preset-form-btns">
                 <button class="btn btn-sm" data-preset-add="personality">Save personality</button>
                 <button class="btn btn-sm btn-ghost hidden" data-preset-cancel="personality">Cancel</button>
@@ -195,7 +203,14 @@
             <h5>Add / edit characters</h5>
             <div class="preset-form">
               <input type="text" id="preset-character-name" placeholder="Title, e.g. Annoying chef" maxlength="60">
-              <textarea id="preset-character-text" rows="2" placeholder="Prompt, e.g. You are an annoying chef who gives cooking advice for everything." maxlength="2000"></textarea>
+              <div class="preset-form-row">
+                <div class="preset-emoji-pick">
+                  <label>Emoji</label>
+                  <button type="button" id="preset-character-emoji-btn" class="preset-emoji-btn" aria-haspopup="listbox" aria-label="Pick an emoji">✨</button>
+                  <div class="preset-emoji-grid hidden" id="preset-character-emoji-grid"></div>
+                </div>
+                <textarea id="preset-character-text" rows="2" placeholder="Prompt, e.g. You are an annoying chef who gives cooking advice for everything." maxlength="2000"></textarea>
+              </div>
               <div class="preset-form-btns">
                 <button class="btn btn-sm" data-preset-add="character">Save character</button>
                 <button class="btn btn-sm btn-ghost hidden" data-preset-cancel="character">Cancel</button>
@@ -348,12 +363,14 @@
           placeholder="e.g. Always answer in short, friendly messages. Never mention you are an AI."></textarea>
         <p class="hint">Stored <b>encrypted</b> on your machine. These guide how the AI behaves on this server and override its default persona.</p>
         <div class="card-actions">
+          <button id="reset-instructions" class="btn btn-ghost">↺ Reset to default</button>
           <button id="save-ai" class="btn btn-primary">
             <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             Save changes
           </button>
           <span id="save-status-ai" class="save-status"></span>
         </div>
+        <p class="hint">Edits save automatically as you type. The <b>Save changes</b> button applies everything right now too — and this whole panel auto-saves on every change.</p>
       </div>
     </div>
 
@@ -543,8 +560,8 @@
             <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
           </span>
           <div>
-            <h3>Warning limit</h3>
-            <p>Auto-remove members who keep racking up warnings.</p>
+            <h3>Warning system</h3>
+            <p>Auto-moderate repeat offenders. Admins warn with <code>/warn</code>; everything else just happens.</p>
           </div>
         </div>
 
@@ -554,7 +571,7 @@
             <input type="number" id="warnlimit" min="1" max="20" placeholder="5">
             <span class="unit">warnings</span>
           </div>
-          <p class="hint">Members are removed after this many warnings. Set to <b>0</b> to disable auto-kick.</p>
+          <p class="hint">After this many active warnings a member is <b>kicked automatically</b>. Set to <b>0</b> to disable auto-kick (warnings just keep a strike count).</p>
         </div>
 
         <div class="card-actions">
@@ -563,6 +580,40 @@
             Save changes
           </button>
           <span id="save-status-moderation" class="save-status"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </span>
+          <div>
+            <h3>Recent warnings</h3>
+            <p>The last 20 warnings in this server — a quick pulse on who's pushing the limits.</p>
+          </div>
+        </div>
+        <div id="warns-view" class="memory-view"><p class="muted">No warnings yet.</p></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </span>
+          <div>
+            <h3>Moderation commands</h3>
+            <p>These always work in Discord — no setup needed. Run them in any channel.</p>
+          </div>
+        </div>
+        <div class="mod-cmds">
+          <span><code>/warn member reason</code> — strike 1</span>
+          <span><code>/warns member</code> — see strikes</span>
+          <span><code>/delwarns member</code> — clear strikes</span>
+          <span><code>/kick member</code> — boot a member</span>
+          <span><code>/ban member</code> / <code>/unban name</code> — ban/unban</span>
+          <span><code>/mute member</code> / <code>/unmute member</code> — timeout</span>
+          <span><code>/purge N</code> — bulk-delete messages</span>
         </div>
       </div>
     </div>
@@ -719,6 +770,6 @@ uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
 </main>
 
 <div class="toast" id="toast"></div>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

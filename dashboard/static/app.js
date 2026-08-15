@@ -60,8 +60,8 @@ function showLoginError() {
 function toast(msg, isErr = false) {
   const t = $("#toast");
   t.textContent = msg;
-  t.style.color = isErr ? "var(--danger)" : "var(--text)";
-  t.classList.add("show");
+  t.classList.toggle("err", !!isErr);
+  t.classList.toggle("show", true);
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove("show"), 3200);
 }
@@ -190,6 +190,8 @@ async function openGuild(id) {
 }
 
 async function loadSettings(id) {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = null;
   saveBar.dirty = false;
   renderSaveBar();
   const [s, refs] = await Promise.all([
@@ -242,6 +244,7 @@ async function loadSettings(id) {
   renderMemory(s, refs);
   renderBirthdays(s);
   renderLeaderboard(id);
+  renderWarns(id);
   renderWelcomePreview();
 }
 
@@ -343,6 +346,47 @@ const MODEL_SPEED = {
 const modelSpeedLabel = (m) => MODEL_SPEED[m] ? ` — ${MODEL_SPEED[m]}` : "";
 
 let _presetData = {};
+
+const PRESET_EMOJI_CHOICES = [
+  "😀","😎","🤖","👾","🐱","🐶","🦊","🐻","🧸","🌸","🌵","🔥","🌊","⚡","🌈","🍕",
+  "🍺","🧁","🎂","🎮","🎯","🧙","🦸","🦹","🧛","🤠","🕵️","💼","🏴‍☠️","👵","🧓","🐉",
+  "🦄","🐢","🦁","🐸","🦖","🍄","🎩","🕶️","☕","🌙","✨","💎","🎵","📚","🏆","🛡️",
+];
+
+function initEmojiPickers() {
+  ["personality", "character"].forEach((kind) => {
+    const btn = $(`#preset-${kind}-emoji-btn`);
+    const grid = $(`#preset-${kind}-emoji-grid`);
+    if (!btn || !grid) return;
+    grid.innerHTML = PRESET_EMOJI_CHOICES.map((e) => `<button type="button" class="emoji-cell" data-emoji="${e}">${e}</button>`).join("");
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      grid.classList.toggle("hidden");
+    });
+    grid.addEventListener("click", (ev) => {
+      const cell = ev.target.closest(".emoji-cell");
+      if (!cell) return;
+      btn.textContent = cell.dataset.emoji;
+      const nameEl = $(`#preset-${kind}-name`);
+      if (nameEl && !nameEl.value.trim()) nameEl.focus();
+      grid.classList.add("hidden");
+    });
+  });
+  document.addEventListener("click", (ev) => {
+    if (ev.target.closest(".preset-emoji-pick")) return;
+    $$(".preset-emoji-grid").forEach((g) => g.classList.add("hidden"));
+  });
+}
+
+function currentPresetEmoji(kind) {
+  const btn = $(`#preset-${kind}-emoji-btn`);
+  return btn ? btn.textContent.trim() : "";
+}
+
+function setCurrentPresetEmoji(kind, emoji) {
+  const btn = $(`#preset-${kind}-emoji-btn`);
+  if (btn && emoji) btn.textContent = emoji;
+}
 
 function presetField(kind, name, field) {
   const found = (_presetData[`preset_${kind}s`] || []).find((b) => b.key === name);
@@ -454,7 +498,7 @@ function renderMemory(s, refs) {
   };
   view.innerHTML = mem.slice(0, 18).map((r) => `
     <div class="mem-row ${r.role === "bot" ? "bot" : "user"}">
-      <div class="mem-who"><span>${r.role === "bot" ? "🤖 Quaestio" : "👤 Member"} · ${ESCAPED(name(r.channel_id))}</span><span class="who">${r.role === "bot" ? "bot" : "member"}</span></div>
+      <div class="mem-who"><span>${r.role === "bot" ? "🤖 Quaestio" : `👤 ${ESCAPED(r.name || "Member")}`} · ${ESCAPED(name(r.channel_id))}</span><span class="who">${r.role === "bot" ? "bot" : "member"}</span></div>
       <div class="mem-text">${ESCAPED(r.text)}</div>
     </div>`).join("");
 }
@@ -482,12 +526,47 @@ async function renderLeaderboard(id) {
       return;
     }
     const medals = ["🥇", "🥈", "🥉"];
-    el.innerHTML = members.map((m, i) => `
-      <div class="lb-row"><span class="lb-rank">${medals[i] || (i + 1) + "."}</span>
-      <span class="lb-name">${ESCAPED(m.name)}</span><span class="lb-msgs">${m.messages} msgs</span></div>`).join("");
+    const maxMsgs = Math.max(...members.map((m) => m.messages));
+    el.innerHTML = '<div class="lb-list">' + members.slice(0, 10).map((m, i) => {
+      const pct = maxMsgs ? Math.round((m.messages / maxMsgs) * 100) : 0;
+      return `
+      <div class="lb-row${i === 0 ? " top" : ""}">
+        <span class="lb-rank">${medals[i] || `${i + 1}.`}</span>
+        <span class="lb-name">${ESCAPED(m.name)}</span>
+        <span class="lb-bar"><span class="lb-bar-fill" style="width:${pct}%"></span></span>
+        <span class="lb-msgs">${m.messages}</span>
+      </div>`;
+    }).join("") + "</div>";
   } catch {
     el.innerHTML = '<p class="muted">Could not load the leaderboard.</p>';
   }
+}
+
+async function renderWarns(id) {
+  const view = $("#warns-view");
+  if (!view) return;
+  try {
+    const data = await api(`/api/guilds/${id}/warns`);
+    const warns = (data && data.warns) || [];
+    if (!warns.length) {
+      view.innerHTML = '<p class="muted">No warnings yet — clean server!</p>';
+      return;
+    }
+    view.innerHTML = warns.map((w) => `
+      <div class="mem-row user">
+        <div class="mem-who"><span>${ESCAPED(fmtWarnDate(w.at))} · <@${ESCAPED(w.user_id)}></span></div>
+        <div class="mem-text">${ESCAPED(w.reason || "No reason given")}</div>
+      </div>`).join("");
+  } catch {
+    view.innerHTML = '<p class="muted">Could not load warnings.</p>';
+  }
+}
+
+function fmtWarnDate(iso) {
+  if (!iso) return "recently";
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch { return iso; }
 }
 
 /* ---------- channel / role pickers by name ---------- */
@@ -586,9 +665,30 @@ const saveBar = {
   flash: null, // {cls, text, until}
 };
 
+let autosaveTimer = null;
+let autosaving = false;
+
 function markDirty() {
   saveBar.dirty = true;
   renderSaveBar();
+  scheduleAutosave();
+}
+
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  renderSaveBar();
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null;
+    if (!activeGuild || !saveBar.dirty || autosaving) return;
+    autosaving = true;
+    renderSaveBar();
+    saveSettings(activeGuild.id, readSettings(), null)
+      .catch(() => { /* flashStatus already shown */ })
+      .finally(() => {
+        autosaving = false;
+        renderSaveBar();
+      });
+  }, 800);
 }
 
 function flashStatus(cls, text) {
@@ -608,10 +708,16 @@ function renderSaveBar() {
     return;
   }
   saveBar.flash = null;
+  if (autosaveTimer || autosaving) {
+    el.hidden = false;
+    el.className = "save-bar autosave";
+    el.textContent = "● Saving changes…";
+    return;
+  }
   if (saveBar.dirty) {
     el.hidden = false;
     el.className = "save-bar dirty";
-    el.textContent = "● Unsaved changes — hit Save to apply";
+    el.textContent = "● Unsaved changes — Edits save automatically as you go";
     return;
   }
   el.hidden = true;
@@ -823,8 +929,8 @@ function wireEvents() {
 
   /* Unsaved-changes indicator: any edit marks the bar, saves clear it */
   const sv = $("#settings-view");
-  sv.addEventListener("input", (e) => { if (e.target.closest("input, select, textarea")) markDirty(); });
-  sv.addEventListener("change", (e) => { if (e.target.closest("input, select, textarea")) markDirty(); });
+  sv.addEventListener("input", (e) => { if (e.target.closest("#preset-manager")) return; if (e.target.closest("input, select, textarea")) markDirty(); });
+  sv.addEventListener("change", (e) => { if (e.target.closest("#preset-manager")) return; if (e.target.closest("input, select, textarea")) markDirty(); });
   sv.addEventListener("click", (e) => { if (e.target.closest("button.chip")) markDirty(); });
 
   /* Preset tiles: tap to select, View more to expand */
@@ -848,14 +954,20 @@ function wireEvents() {
     if (addBtn) addBtn.addEventListener("click", async () => {
       const name = nameEl.value.trim();
       const text = textEl.value.trim();
+      const emoji = currentPresetEmoji(kind);
       if (!name || !text) { flashStatus("err", "Give the preset a title and a prompt."); return; }
+      if (!emoji) { flashStatus("err", "Pick an emoji for this preset."); return; }
       await saving(addBtn, async () => {
         try {
           await api(`/api/guilds/${activeGuild.id}/presets/${kind}`, {
-            method: "POST", body: JSON.stringify({ name, text }),
+            method: "POST", body: JSON.stringify({ name, text, emoji }),
           });
           nameEl.value = "";
           textEl.value = "";
+          setCurrentPresetEmoji(kind, "✨");
+          const cancel = $(`[data-preset-cancel="${kind}"]`);
+          if (cancel) cancel.classList.add("hidden");
+          addBtn.textContent = "Save " + kind;
           await refreshPresets();
           flashStatus("ok", "Custom " + kind + " saved.");
         } catch { /* toast already shown */ }
@@ -865,6 +977,7 @@ function wireEvents() {
     if (cancelBtn) cancelBtn.addEventListener("click", () => {
       nameEl.value = "";
       textEl.value = "";
+      setCurrentPresetEmoji(kind, "✨");
       cancelBtn.classList.add("hidden");
       const add = $(`[data-preset-add="${kind}"]`);
       if (add) add.textContent = "Save " + kind;
@@ -884,6 +997,7 @@ function wireEvents() {
       if (nameEl && textEl) {
         nameEl.value = name;
         textEl.value = presetField(kind, name, "text");
+        setCurrentPresetEmoji(kind, presetField(kind, name, "emoji") || "✨");
         if (cancel) cancel.classList.remove("hidden");
         if (add) add.textContent = "Update " + kind;
         nameEl.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -911,6 +1025,18 @@ function wireEvents() {
         st.textContent = "Cleared ✓";
         setTimeout(() => (st.textContent = ""), 2200);
         await loadSettings(activeGuild.id);
+      } catch { /* toast already shown */ }
+    });
+  });
+
+  $("#reset-instructions").addEventListener("click", async () => {
+    if (!confirm("Reset the system prompt back to default (clears it)? Your current instructions will be removed.")) return;
+    $("#ai_instructions").value = "";
+    markDirty();
+    await saving($("#reset-instructions"), async () => {
+      try {
+        await saveSettings(activeGuild.id, readSettings(), $("#save-status-ai"));
+        toast("System prompt reset to default");
       } catch { /* toast already shown */ }
     });
   });
@@ -968,6 +1094,7 @@ function wireEvents() {
 
 /* ---------- init ---------- */
 async function init() {
+  initEmojiPickers();
   wireEvents();
   grabTokenFromHash();
   try {

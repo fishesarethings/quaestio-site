@@ -212,7 +212,7 @@ def db_init():
             PRIMARY KEY (guild_id, user_id)
         );
         CREATE TABLE IF NOT EXISTS ai_presets (
-            guild_id TEXT, kind TEXT, name TEXT, text TEXT,
+            guild_id TEXT, kind TEXT, name TEXT, text TEXT, emoji TEXT DEFAULT '✨',
             PRIMARY KEY (guild_id, kind, name)
         );
         CREATE TABLE IF NOT EXISTS profiles (
@@ -227,6 +227,9 @@ def db_init():
         conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT DEFAULT ''")
     if "name" not in cols:
         conn.execute("ALTER TABLE memory ADD COLUMN name TEXT DEFAULT ''")
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(ai_presets)").fetchall()}
+    if "emoji" not in pcols:
+        conn.execute("ALTER TABLE ai_presets ADD COLUMN emoji TEXT DEFAULT '✨'")
     conn.commit()
     conn.close()
 
@@ -1494,11 +1497,17 @@ async def leaderboard(interaction: discord.Interaction, top: int = 10):
         await interaction.response.send_message("No XP yet — get people chatting first!", ephemeral=True)
         return
     medals = ["🥇", "🥈", "🥉"]
+    max_msgs = max(r["messages"] for r in rows)
+    bar_w = 10
     lines = ["**🏆 Top chatters**"]
     for i, r in enumerate(rows):
         member = interaction.guild.get_member(int(r["user_id"]))
         name = member.display_name if member else f"<@{r['user_id']}>"
-        lines.append(f"{medals[i] if i < 3 else f'{i + 1}.'} **{name}** — Lv {level_for_messages(r['messages'])} · {r['messages']} msgs")
+        filled = round((r["messages"] / max_msgs) * bar_w) if max_msgs else 0
+        bar = "▰" * filled + "▱" * (bar_w - filled)
+        rank = medals[i] if i < 3 else f"**{i + 1}.**"
+        tier = "· 🔥" if i == 0 else ""
+        lines.append(f"{rank} **{name}** — Lv {level_for_messages(r['messages'])} · {bar} {r['messages']} msgs{tier}")
     await interaction.response.send_message("\n".join(lines))
 
 

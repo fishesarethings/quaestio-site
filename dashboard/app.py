@@ -84,12 +84,15 @@ def db_init():
             PRIMARY KEY (guild_id, key)
         );
         CREATE TABLE IF NOT EXISTS ai_presets (
-            guild_id TEXT, kind TEXT, name TEXT, text TEXT,
+            guild_id TEXT, kind TEXT, name TEXT, text TEXT, emoji TEXT DEFAULT '✨',
             PRIMARY KEY (guild_id, kind, name)
         );
         CREATE TABLE IF NOT EXISTS profiles (
             guild_id TEXT, user_id TEXT, name TEXT, facts TEXT, at TEXT,
             PRIMARY KEY (guild_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS warned (
+            guild_id TEXT, user_id TEXT, reason TEXT, at TEXT
         );"""
     )
     cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
@@ -97,6 +100,9 @@ def db_init():
         conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT DEFAULT ''")
     if "name" not in cols:
         conn.execute("ALTER TABLE memory ADD COLUMN name TEXT DEFAULT ''")
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(ai_presets)").fetchall()}
+    if "emoji" not in pcols:
+        conn.execute("ALTER TABLE ai_presets ADD COLUMN emoji TEXT DEFAULT '✨'")
     conn.commit()
     conn.close()
 
@@ -556,6 +562,18 @@ async def api_leaderboard(request: Request, guild_id: int):
     }
 
 
+@app.get("/api/guilds/{guild_id}/warns")
+async def api_warns(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, reason, at FROM warned WHERE guild_id=? ORDER BY at DESC LIMIT 20",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    return {"warns": [{"user_id": r["user_id"], "reason": r["reason"], "at": r["at"]} for r in rows]}
+
+
 @app.get("/api/host/pool")
 async def api_host_pool(request: Request):
     await require_host_admin(request)
@@ -671,11 +689,11 @@ PRESET_PROMPTS = {
 def guild_presets(guild_id, kind):
     conn = db()
     rows = conn.execute(
-        "SELECT name, text FROM ai_presets WHERE guild_id=? AND kind=?",
+        "SELECT name, text, emoji FROM ai_presets WHERE guild_id=? AND kind=?",
         (str(guild_id), kind),
     ).fetchall()
     conn.close()
-    return {r["name"]: r["text"] for r in rows}
+    return {r["name"]: {"text": r["text"], "emoji": r["emoji"] or "✨"} for r in rows}
 
 
 def preset_bundle(guild_id, kind):
@@ -689,9 +707,9 @@ def preset_bundle(guild_id, kind):
             "emoji": PRESET_EMOJI[kind].get(key, "✨"),
             "text": PRESET_PROMPTS[kind].get(key, ""), "custom": False,
         })
-    for name, text in custom.items():
+    for name, meta in custom.items():
         items.append({"key": name, "title": name, "desc": "Your custom preset.",
-                      "emoji": "✨", "text": text, "custom": True})
+                      "emoji": meta["emoji"], "text": meta["text"], "custom": True})
     return items
 
 
@@ -702,7 +720,7 @@ async def api_get_presets(request: Request, guild_id: int, kind: str):
         raise HTTPException(400, "kind must be personality or character")
     return {
         "bundle": preset_bundle(guild_id, kind),
-        "custom": [{"name": n, "text": t} for n, t in guild_presets(guild_id, kind).items()],
+        "custom": [{"name": n, "text": m["text"], "emoji": m["emoji"]} for n, m in guild_presets(guild_id, kind).items()],
     }
 
 
@@ -714,17 +732,22 @@ async def api_save_preset(request: Request, guild_id: int, kind: str):
     body = await request.json()
     name = str(body.get("name", "")).strip()
     text = str(body.get("text", "")).strip()
+    emoji = str(body.get("emoji", "")).strip()
     if not name:
         raise HTTPException(400, "Preset needs a title")
+    if not emoji:
+        raise HTTPException(400, "Preset needs an emoji")
     if name in ("none",) or name in PRESET_BUILTINS[kind]:
         raise HTTPException(400, "That name is already in use by a built-in preset")
     if len(name) > 60 or len(text) > 2000:
         raise HTTPException(400, "Title too long (max 60) or instructions too long (max 2000)")
+    if len(emoji) > 16:
+        raise HTTPException(400, "Emoji too long")
     conn = db()
     conn.execute(
-        """INSERT INTO ai_presets (guild_id, kind, name, text) VALUES (?, ?, ?, ?)
-           ON CONFLICT(guild_id, kind, name) DO UPDATE SET text = excluded.text""",
-        (str(guild_id), kind, name, text),
+        """INSERT INTO ai_presets (guild_id, kind, name, text, emoji) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, kind, name) DO UPDATE SET text = excluded.text, emoji = excluded.emoji""",
+        (str(guild_id), kind, name, text, emoji),
     )
     conn.commit()
     conn.close()
