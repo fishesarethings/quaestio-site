@@ -38,7 +38,10 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 # Only these models show up in the AI model picker. Everything else on a box
 # (phi, gemma, future pulls, …) stays hidden so members see a curated menu.
-ALLOWED_MODELS = ["qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b"]
+ALLOWED_MODELS = [
+    "qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b",
+    "tinyllama:latest", "llama3.2:3b",
+]
 
 CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
@@ -75,11 +78,15 @@ def db():
 
 def db_init():
     conn = db()
-    conn.execute(
+    conn.executescript(
         """CREATE TABLE IF NOT EXISTS config (
             guild_id TEXT, key TEXT, value TEXT,
             PRIMARY KEY (guild_id, key)
-        )"""
+        );
+        CREATE TABLE IF NOT EXISTS ai_presets (
+            guild_id TEXT, kind TEXT, name TEXT, text TEXT,
+            PRIMARY KEY (guild_id, kind, name)
+        );"""
     )
     conn.commit()
     conn.close()
@@ -388,7 +395,7 @@ async def api_models(request: Request, guild_id: int):
 SETTING_KEYS = [
     "ai_enabled", "ai_model", "ai_endpoint", "ai_memory", "ai_instructions",
     "ai_quota", "ai_channels", "ai_mention", "ai_temperature", "ai_max_tokens",
-    "ai_source", "ai_contribute", "ai_window", "ai_personality",
+    "ai_source", "ai_contribute", "ai_window", "ai_personality", "ai_character",
     "ai_conv", "ai_conv_minutes",
     "welcome_enabled", "welcome_channel", "welcome_message",
     "welcome_role", "levelrole", "level_announce", "xp_enabled", "warnlimit",
@@ -491,6 +498,8 @@ async def api_get_settings(request: Request, guild_id: int):
     settings["birthdays"] = [
         {"user_id": r["user_id"], "month": r["month"], "day": r["day"]} for r in bdays
     ]
+    settings["preset_personalities"] = preset_bundle(guild_id, "personality")
+    settings["preset_characters"] = preset_bundle(guild_id, "character")
     return settings
 
 
@@ -569,6 +578,103 @@ async def api_set_settings(request: Request, guild_id: int):
         if key in SETTING_KEYS and value is not None:
             set_cfg(guild_id, key, value)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# AI personality / character presets (custom entries per guild)
+# ---------------------------------------------------------------------------
+
+# Mirrored titles so the panel can label choices without importing the bot.
+PRESET_BUILTINS = {
+    "personality": {
+        "friendly": "Friendly",
+        "sage": "Wise sage",
+        "sarcastic": "Sarcastic wit",
+        "pirate": "Pirate",
+        "professional": "Professional",
+    },
+    "character": {
+        "Jeff from Mars": "Jeff from Mars",
+        "Grumpy tavern keeper": "Grumpy tavern keeper",
+        "Wholesome grandma": "Wholesome grandma",
+        "Cyber detective": "Cyber detective",
+    },
+}
+
+
+def guild_presets(guild_id, kind):
+    conn = db()
+    rows = conn.execute(
+        "SELECT name, text FROM ai_presets WHERE guild_id=? AND kind=?",
+        (str(guild_id), kind),
+    ).fetchall()
+    conn.close()
+    return {r["name"]: r["text"] for r in rows}
+
+
+def preset_bundle(guild_id, kind):
+    """[{key,title,prompt,custom}] for the panel: "none" + built-ins + custom."""
+    items = [{"key": "none", "title": "None", "prompt": ""}]
+    for key, title in PRESET_BUILTINS[kind].items():
+        items.append({"key": key, "title": title, "prompt": "", "custom": False})
+    for name, text in guild_presets(guild_id, kind).items():
+        items.append({"key": name, "title": name, "prompt": text, "custom": True})
+    return items
+
+
+@app.get("/api/guilds/{guild_id}/presets/{kind}")
+async def api_get_presets(request: Request, guild_id: int, kind: str):
+    session_user(request)
+    if kind not in ("personality", "character"):
+        raise HTTPException(400, "kind must be personality or character")
+    return {
+        "bundle": preset_bundle(guild_id, kind),
+        "custom": [{"name": n, "text": t} for n, t in guild_presets(guild_id, kind).items()],
+    }
+
+
+@app.post("/api/guilds/{guild_id}/presets/{kind}")
+async def api_save_preset(request: Request, guild_id: int, kind: str):
+    require_admin_guild(request, guild_id)
+    if kind not in ("personality", "character"):
+        raise HTTPException(400, "kind must be personality or character")
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    text = str(body.get("text", "")).strip()
+    if not name:
+        raise HTTPException(400, "Preset needs a title")
+    if name in ("none",) or name in PRESET_BUILTINS[kind]:
+        raise HTTPException(400, "That name is already in use by a built-in preset")
+    if len(name) > 60 or len(text) > 2000:
+        raise HTTPException(400, "Title too long (max 60) or instructions too long (max 2000)")
+    conn = db()
+    conn.execute(
+        """INSERT INTO ai_presets (guild_id, kind, name, text) VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id, kind, name) DO UPDATE SET text = excluded.text""",
+        (str(guild_id), kind, name, text),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "bundle": preset_bundle(guild_id, kind)}
+
+
+@app.delete("/api/guilds/{guild_id}/presets/{kind}")
+async def api_delete_preset(request: Request, guild_id: int, kind: str):
+    require_admin_guild(request, guild_id)
+    if kind not in ("personality", "character"):
+        raise HTTPException(400, "kind must be personality or character")
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    if not name or name in PRESET_BUILTINS[kind]:
+        raise HTTPException(400, "Built-in presets can't be deleted")
+    conn = db()
+    conn.execute(
+        "DELETE FROM ai_presets WHERE guild_id=? AND kind=? AND name=?",
+        (str(guild_id), kind, name),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "bundle": preset_bundle(guild_id, kind)}
 
 
 # ---------------------------------------------------------------------------

@@ -629,3 +629,55 @@ input:disabled { opacity: 0.55; cursor: not-allowed; }
 .pool-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pool-model { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--muted); }
 .pool-window { font-size: 12px; color: var(--muted-2); }
+
+/* Sticky "unsaved / saved" indicator above the settings tabs */
+.save-bar {
+  position: sticky;
+  top: 10px;
+  z-index: 40;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow);
+}
+.save-bar.ok { border-color: var(--green); color: var(--green); }
+.save-bar.err { border-color: var(--danger); color: var(--danger); }
+.save-bar.dirty { border-color: #fbbf24; color: #fbbf24; }
+
+/* AI instructions box matches the page's inputs */
+#ai_instructions { width: 100%; margin-top: 8px; }
+
+.preset-manager-head { margin-bottom: 14px; }
+.card-inner {
+  margin-top: 14px; padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-strong, #2a2a2a);
+  border-radius: 12px;
+}
+.preset-manager-head h4 { margin: 0 0 2px; }
+.preset-manager-head .muted { margin: 0; font-size: 0.85rem; }
+.preset-section { margin-bottom: 18px; }
+.preset-section h5 { margin: 0 0 8px; font-size: 0.92rem; }
+.preset-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.preset-item {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel-solid, #161616);
+  border: 1px solid var(--border-strong, #2a2a2a);
+  border-radius: 8px; padding: 8px 10px;
+}
+.preset-item-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.preset-item-copy strong { font-size: 0.85rem; }
+.preset-item-copy span { font-size: 0.75rem; color: var(--muted, #999); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn-danger { color: #fff; background: var(--danger, #dc2626); }
+.btn-danger:hover { filter: brightness(1.1); }
+.preset-form { display: flex; flex-direction: column; gap: 6px; }
+.preset-form input, .preset-form textarea {
+  background: var(--panel-solid, #161616);
+  border: 1px solid var(--border-strong, #2a2a2a);
+  border-radius: 8px; color: inherit; padding: 8px 10px; font: inherit; width: 100%;
+}
+.btn-sm { padding: 5px 10px; font-size: 0.78rem; border-radius: 8px; }

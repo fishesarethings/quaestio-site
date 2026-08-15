@@ -190,18 +190,23 @@ async function openGuild(id) {
 }
 
 async function loadSettings(id) {
+  saveBar.dirty = false;
+  renderSaveBar();
   const [s, refs] = await Promise.all([
     api(`/api/guilds/${id}/settings`),
     loadRefs(id),
   ]);
   const set = (el, v) => { if ($(el)) $(el).value = v ?? ""; };
   const source = (s.ai_source || "shared").toLowerCase();
+  _presetData = s;
   set("#ai_source", source);
   set("#ai_endpoint", source === "self" ? (s.ai_endpoint || "") : "");
   set("#ai_memory", s.ai_memory);
   set("#ai_quota", s.ai_quota || "");
   set("#ai_window", String(s.ai_window || "6"));
-  set("#ai_personality", s.ai_personality || "friendly");
+  renderPresetSelect("#ai_personality", s.preset_personalities || [], s.ai_personality || "none");
+  renderPresetSelect("#ai_character", s.preset_characters || [], s.ai_character || "none");
+  renderPresetLists(s);
   set("#ai_instructions", s.ai_instructions);
   set("#ai_max_tokens", s.ai_max_tokens);
   set("#welcome_message", s.welcome_message);
@@ -284,7 +289,8 @@ function buildSummary(s) {
     ["AI box status", box ? (box.online ? "Online" : "Offline") : "Checking…"],
     ["Models on box", box && box.models.length ? `${box.models.length}` : "—"],
     ["Model in use", s.ai_model || s.host_model || "Host default"],
-    ["Personality", PERSONALITY_LABELS[s.ai_personality] || "Friendly"],
+    ["Personality", PERSONALITY_LABELS[s.ai_personality] || "None"],
+    ["Character", CHARACTER_LABELS[s.ai_character] || (s.ai_character || "None")],
     ["Memory", `${mem} messages / channel`],
     ["Rate limit", q ? `${q} calls / ${win}h` : "Unlimited"],
     ["Used this window", `${used} call${used === 1 ? "" : "s"}`],
@@ -327,15 +333,74 @@ function renderQuota(s) {
 
 const MODEL_SPEED = {
   "tinyllama": "⚡ fast",
+  "tinyllama:latest": "⚡ fast",
   "qwen2.5:0.5b": "⚡ fast",
   "qwen2.5:1.5b": "balanced (a bit slower)",
   "qwen2.5:3b": "🐢 powerful but slow",
+  "llama3.2:3b": "🐢 powerful but slow",
 };
 const modelSpeedLabel = (m) => MODEL_SPEED[m] ? ` — ${MODEL_SPEED[m]}` : "";
+
+function renderPresetSelect(sel, bundle, selected) {
+  const el = $(sel);
+  if (!el) return;
+  if (!bundle || !bundle.length) {
+    el.innerHTML = '<option value="none">None</option>';
+    return;
+  }
+  el.innerHTML = bundle
+    .map((b) => `<option value="${ESCAPED(b.key)}" ${b.key === selected ? "selected" : ""}>${ESCAPED(b.title)}</option>`)
+    .join("");
+}
+
+let _presetData = {};
+
+function presetTexts(kind, name) {
+  const found = (_presetData[`preset_${kind}s`] || []).find((b) => b.key === name);
+  return found ? (found.prompt || "") : "";
+}
+
+async function refreshPresets() {
+  const s = await api(`/api/guilds/${activeGuild.id}/settings`);
+  _presetData = s;
+  renderPresetSelect("#ai_personality", s.preset_personalities || [], s.ai_personality || "none");
+  renderPresetSelect("#ai_character", s.preset_characters || [], s.ai_character || "none");
+  renderPresetLists(s);
+}
+
+function renderPresetLists(s) {
+  ["personality", "character"].forEach((kind) => {
+    const list = $(`#preset-${kind}-list`);
+    if (!list) return;
+    const custom = ((s[`preset_${kind}s`] || []).filter((b) => b.custom)) || [];
+    if (!custom.length) {
+      list.innerHTML = `<p class="muted" style="margin:0">No custom ${kind}s yet — add one below.</p>`;
+      return;
+    }
+    list.innerHTML = custom
+      .map(
+        (b) => `<div class="preset-item">
+          <div class="preset-item-copy">
+            <strong>${ESCAPED(b.title)}</strong>
+            <span>${ESCAPED((b.prompt || "").slice(0, 90))}${(b.prompt || "").length > 90 ? "…" : ""}</span>
+          </div>
+          <button class="btn btn-sm" data-preset-edit="${kind}" data-preset-name="${ESCAPED(b.title)}">Edit</button>
+          <button class="btn btn-sm btn-danger" data-preset-del="${kind}" data-preset-name="${ESCAPED(b.title)}">Delete</button>
+        </div>`
+      )
+      .join("");
+  });
+}
 
 const PERSONALITY_LABELS = {
   friendly: "Friendly", sage: "Wise sage", sarcastic: "Sarcastic wit",
   pirate: "Pirate", professional: "Professional",
+};
+const CHARACTER_LABELS = {
+  "Jeff from Mars": "Jeff from Mars",
+  "Grumpy tavern keeper": "Grumpy tavern keeper",
+  "Wholesome grandma": "Wholesome grandma",
+  "Cyber detective": "Cyber detective",
 };
 
 async function populateModels(sel, guildId, field, selected) {
@@ -501,12 +566,54 @@ function setTemperature(v) {
 }
 
 /* ---------- save helpers ---------- */
+const saveBar = {
+  dirty: false,
+  flash: null, // {cls, text, until}
+};
+
+function markDirty() {
+  saveBar.dirty = true;
+  renderSaveBar();
+}
+
+function flashStatus(cls, text) {
+  saveBar.flash = { cls, text, until: Date.now() + 2800 };
+  if (cls === "ok") saveBar.dirty = false;
+  renderSaveBar();
+  setTimeout(renderSaveBar, 3000);
+}
+
+function renderSaveBar() {
+  const el = $("#save-bar");
+  if (!el) return;
+  if (saveBar.flash && Date.now() < saveBar.flash.until) {
+    el.hidden = false;
+    el.className = "save-bar " + saveBar.flash.cls;
+    el.textContent = saveBar.flash.text;
+    return;
+  }
+  saveBar.flash = null;
+  if (saveBar.dirty) {
+    el.hidden = false;
+    el.className = "save-bar dirty";
+    el.textContent = "● Unsaved changes — hit Save to apply";
+    return;
+  }
+  el.hidden = true;
+}
+
 async function saveSettings(id, body, statusEl) {
-  await api(`/api/guilds/${id}/settings`, { method: "POST", body: JSON.stringify(body) });
+  try {
+    await api(`/api/guilds/${id}/settings`, { method: "POST", body: JSON.stringify(body) });
+  } catch (e) {
+    flashStatus("err", "✗ Save failed — check the connection and try again");
+    throw e;
+  }
   if (statusEl) {
     statusEl.textContent = "Saved ✓";
     setTimeout(() => (statusEl.textContent = ""), 2200);
   }
+  flashStatus("ok", "✓ Saved — changes are live");
   toast("Saved");
 }
 
@@ -536,6 +643,7 @@ function readSettings() {
     ai_quota: $("#ai_quota").value,
     ai_window: $("#ai_window").value,
     ai_personality: $("#ai_personality").value,
+    ai_character: $("#ai_character").value,
     ai_contribute: b("#ai_contribute"),
     ai_instructions: $("#ai_instructions").value,
     ai_channels: readAiChannels(),
@@ -696,6 +804,58 @@ function wireEvents() {
 
   $("#ai_conv").addEventListener("change", () => {
     $("#ai-conv-minutes-wrap").hidden = !$("#ai_conv").checked;
+  });
+
+  /* Unsaved-changes indicator: any edit marks the bar, saves clear it */
+  const sv = $("#settings-view");
+  sv.addEventListener("input", (e) => { if (e.target.closest("input, select, textarea")) markDirty(); });
+  sv.addEventListener("change", (e) => { if (e.target.closest("input, select, textarea")) markDirty(); });
+  sv.addEventListener("click", (e) => { if (e.target.closest("button.chip")) markDirty(); });
+
+  /* Custom preset CRUD: add / edit / delete per kind */
+  ["personality", "character"].forEach((kind) => {
+    const addBtn = $(`[data-preset-add="${kind}"]`);
+    const nameEl = $(`#preset-${kind}-name`);
+    const textEl = $(`#preset-${kind}-text`);
+    if (addBtn) addBtn.addEventListener("click", async () => {
+      const name = nameEl.value.trim();
+      const text = textEl.value.trim();
+      if (!name || !text) return;
+      await saving(addBtn, async () => {
+        try {
+          await api(`/api/guilds/${activeGuild.id}/presets/${kind}`, {
+            method: "POST", body: JSON.stringify({ name, text }),
+          });
+          nameEl.value = "";
+          textEl.value = "";
+          await refreshPresets();
+        } catch { /* toast already shown */ }
+      });
+    });
+  });
+
+  sv.addEventListener("click", async (e) => {
+    const editBtn = e.target.closest("[data-preset-edit]");
+    const delBtn = e.target.closest("[data-preset-del]");
+    if (editBtn) {
+      const kind = editBtn.dataset.presetEdit;
+      const name = editBtn.dataset.presetName;
+      const textEl = $(`#preset-${kind}-text`);
+      const nameEl = $(`#preset-${kind}-name`);
+      if (nameEl && textEl) { nameEl.value = name; textEl.value = presetTexts(kind, name); }
+    } else if (delBtn) {
+      const kind = delBtn.dataset.presetDel;
+      const name = delBtn.dataset.presetName;
+      if (!confirm(`Delete custom ${kind} "${name}"?`)) return;
+      await saving(delBtn, async () => {
+        try {
+          await api(`/api/guilds/${activeGuild.id}/presets/${kind}`, {
+            method: "DELETE", body: JSON.stringify({ name }),
+          });
+          await refreshPresets();
+        } catch { /* toast already shown */ }
+      });
+    }
   });
 
   $("#clear-memory").addEventListener("click", async () => {

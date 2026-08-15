@@ -53,47 +53,111 @@ RPC_LARGE_IMAGE = os.environ.get("RPC_LARGE_IMAGE", "logo")
 RPC_SMALL_IMAGE = os.environ.get("RPC_SMALL_IMAGE", "")
 
 # "Chat like a person" persona for the small model. Keeps it short, casual,
-# and natural instead of a wall of text.
-PERSONA = (
-    "You are Quaestio, a friendly, dry-witted Discord buddy. Behave like a human:\n"
-    "- reply in 1-4 short casual sentences\n"
-    "- sometimes trail off with ...\n"
-    "- never mention being an AI, a model, Ollama, or Discord's ToS\n"
-    "- ask a question back now and then\n"
+# and natural instead of a wall of text — but grounded so a weak model stays
+# honest instead of inventing dates/facts or bouncing questions back.
+GROUND_RULES = (
+    "- you are talking to real people on a Discord server\n"
+    "- answer the question directly; don't deflect or repeat the question\n"
+    "- NEVER ask the user a question back, say 'what about you', or end by\n"
+    "  flinging the topic at them\n"
+    "- never invent dates, years, facts, names or numbers — if you don't\n"
+    "  know, say you're not sure\n"
+    "- reply in 1-4 short casual sentences and never mention being an AI\n"
+)
+
+# The "Chat like a person" opening fed to the small model when no character or
+# personality is picked. Keeps it short, casual and natural, with the grounding
+# rules above keeping the model honest (no invented dates, no deflecting).
+DEFAULT_OPENING = (
+    "You are Quaestio, a friendly, dry-witted Discord buddy. Behave like a human. "
     "You share one small brain with the whole server, so keep it light."
 )
 
-# Pick a personality on the web panel — a different flavor of the same AI.
-# Each one overrides the friendly persona above (server instructions still win).
+# Personality = the *tone* of the replies — a titled preset picked in the panel.
+# Custom personalities are stored per-guild (ai_presets, kind="personality")
+# and override the built-ins listed here. "none" means no personality applies
+# and Quaestio stays the default friendly buddy. Grounding rules always win.
 PERSONALITIES = {
-    "friendly": None,  # falls back to PERSONA
-    "sage": (
-        "You are Quaestio, a calm, thoughtful sage on Discord. Be wise and "
-        "measured: reply in 1-4 short sentences, favor nuance and questions "
-        "back, and never mention being an AI, a model, or Ollama."
-    ),
-    "sarcastic": (
-        "You are Quaestio, a witty, dry-witted buddy with a playful sarcastic "
-        "edge. Reply in 1-4 short casual sentences, keep it teasing but never "
-        "mean, and never mention being an AI or a model."
-    ),
-    "pirate": (
-        "Arr! You are Quaestio, a cheerful pirate on Discord. Reply in 1-4 "
-        "short lines full o' nautical cheer (arr, ye, matey), and never "
-        "mention being an AI or a model."
-    ),
-    "professional": (
-        "You are Quaestio, a crisp, professional assistant on Discord. Reply "
-        "in 1-4 short, precise sentences, be helpful and to the point, and "
-        "never mention being an AI or a model."
-    ),
+    "friendly": {"title": "Friendly", "prompt": "Keep the tone friendly, warm and upbeat."},
+    "sage": {"title": "Wise sage", "prompt": "Keep the tone wise, calm, measured and to the point."},
+    "sarcastic": {"title": "Sarcastic wit", "prompt": "Keep a playful, sarcastic edge — never mean."},
+    "pirate": {"title": "Pirate", "prompt": "Lace your replies with nautical cheer (arr, ye, matey) but stay on topic."},
+    "professional": {"title": "Professional", "prompt": "Keep it crisp, precise and to the point."},
+}
+
+# Character = *who* the bot pretends to be (a whole new persona) — a titled
+# preset too. Built-ins ship with the bot and can't be edited or deleted;
+# guilds create their own in the ai_presets table (kind="character").
+CHARACTERS = {
+    "Jeff from Mars": {
+        "title": "Jeff from Mars",
+        "prompt": (
+            "You are Jeff, a friendly alien from Mars who is absolutely obsessed "
+            "with beans. You bring beans up constantly and insist they solve everything."
+        ),
+    },
+    "Grumpy tavern keeper": {
+        "title": "Grumpy tavern keeper",
+        "prompt": (
+            "You are a grumpy but well-meaning tavern keeper. You complain a "
+            "little, mutter under your breath, but you always help customers in "
+            "the end."
+        ),
+    },
+    "Wholesome grandma": {
+        "title": "Wholesome grandma",
+        "prompt": (
+            "You are a sweet, supportive grandma. You are proud of everyone, "
+            "worry about whether people ate, and always have time to listen."
+        ),
+    },
+    "Cyber detective": {
+        "title": "Cyber detective",
+        "prompt": (
+            "You are a sharp, no-nonsense cyber-sleuth. You talk calmly, spot "
+            "details others miss, and punctuate breakthroughs with 'elementary'."
+        ),
+    },
 }
 
 
-def persona_for(name):
-    """Resolve a personality name to its persona prompt (friendly = default)."""
-    key = (name or "friendly").strip().lower()
-    return PERSONALITIES.get(key) or PERSONA
+def persona_from(personality="none", character_name="", custom_personas=None, custom_characters=None):
+    """Build the persona prompt from a personality (tone) + character (who).
+
+    A character wins over tone when both are set (it defines *who* you are);
+    the chosen personality still tints the tone. Grounding rules are always
+    appended last so a weak model stays honest. Both accept custom dicts whose
+    keys shadow the built-in presets.
+    """
+    personality = (personality or "none").strip().lower()
+    custom_personas = custom_personas or {}
+    custom_characters = custom_characters or {}
+
+    person = persona_prompt(personality, custom_personas)
+    char = persona_prompt(character_name, custom_characters) if character_name else ""
+
+    parts = []
+    if char:
+        parts.append(char)
+        if personality not in ("none", "") and person:
+            parts.append(f"Keep the {personality} tone in your replies.")
+    elif person:
+        parts.append(person)
+    else:
+        parts.append(DEFAULT_OPENING)
+    parts.append(GROUND_RULES)
+    return "\n".join(parts)
+
+
+def persona_prompt(key, custom):
+    """Resolve a preset key (personality or character) to its raw prompt."""
+    key = (key or "").strip()
+    if not key or key == "none":
+        return ""
+    p = custom.get(key)
+    if p is not None:
+        return (p or "").strip()
+    return (PERSONALITIES.get(key) or CHARACTERS.get(key) or {}).get("prompt", "")
 
 # How much conversation to remember per channel by default (turns).
 MEMORY_DEFAULT = 4
@@ -147,10 +211,25 @@ def db_init():
             guild_id TEXT, user_id TEXT, month TEXT, day TEXT,
             PRIMARY KEY (guild_id, user_id)
         );
+        CREATE TABLE IF NOT EXISTS ai_presets (
+            guild_id TEXT, kind TEXT, name TEXT, text TEXT,
+            PRIMARY KEY (guild_id, kind, name)
+        );
         """
     )
     conn.commit()
     conn.close()
+
+
+def guild_presets(guild_id, kind):
+    """This guild's custom personality/character presets: {name: text}."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT name, text FROM ai_presets WHERE guild_id=? AND kind=?",
+        (str(guild_id), kind),
+    ).fetchall()
+    conn.close()
+    return {r["name"]: r["text"] for r in rows}
 
 
 def get_cfg(guild_id, key, default=None):
@@ -233,17 +312,23 @@ def guild_ai_config(guild_id):
         "model": get_cfg(guild_id, "ai_model", host("ai_model", OLLAMA_MODEL)),
         "enabled": flag_on(guild_id, "ai_enabled", "1"),
         "instructions": get_cfg(guild_id, "ai_instructions", ""),
-        "persona": persona_for(get_cfg(guild_id, "ai_personality", "friendly")),
+        "persona": persona_from(
+            get_cfg(guild_id, "ai_personality", "none"),
+            get_cfg(guild_id, "ai_character", ""),
+            guild_presets(guild_id, "personality"),
+            guild_presets(guild_id, "character"),
+        ),
         "ai_channels": get_cfg(guild_id, "ai_channels", ""),
         "ai_mention": flag_on(guild_id, "ai_mention", "1"),
-        "temperature": float(get_cfg(guild_id, "ai_temperature", "0.8") or "0.8"),
+        "temperature": float(get_cfg(guild_id, "ai_temperature", "0.7") or "0.7"),
         "max_tokens": int(get_cfg(guild_id, "ai_max_tokens", "400") or "400"),
         "window": max(1, int(get_cfg(guild_id, "ai_window", "6") or "6")),
         "source": source,
         "contribute": flag_on(guild_id, "ai_contribute", "0"),
         # Conversation mode: once the bot replies it "stays" for a few minutes,
-        # so members can keep chatting without @mentioning it again.
-        "conv": flag_on(guild_id, "ai_conv", "0"),
+        # so members can keep chatting without @mentioning it again. On by
+        # default; only a real @mentions it wakes it back up.
+        "conv": flag_on(guild_id, "ai_conv", "1"),
         "conv_minutes": max(1, int(get_cfg(guild_id, "ai_conv_minutes", "3") or 3)),
     }
 
@@ -421,7 +506,13 @@ memory = MemoryBank()
 
 
 def build_prompt(persona, context, question, instructions=""):
-    lines = [persona]
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%B %d, %Y")
+    lines = [
+        persona,
+        "",
+        f"Today is {today} (UTC). Use it for anything time-related; never guess dates.",
+        "The messages below are from real members of a Discord server.",
+    ]
     if instructions:
         lines += ["", "SERVER INSTRUCTIONS (follow these, they override the above):", instructions]
     lines += ["", "Recent conversation:"]
@@ -617,9 +708,12 @@ def host_cfg():
         "model": h("ai_model", OLLAMA_MODEL),
         "memory": max(1, int(h("ai_memory", MEMORY_DEFAULT) or MEMORY_DEFAULT)),
         "instructions": h("ai_instructions", ""),
-        "persona": persona_for(h("ai_personality", "friendly")),
+        "persona": persona_from(
+            h("ai_personality", "none"), h("ai_character", ""),
+            guild_presets("host", "personality"), guild_presets("host", "character"),
+        ),
         "quota": max(0, int(h("ai_quota", "0") or 0)),
-        "temperature": float(h("ai_temperature", "0.8") or 0.8),
+        "temperature": float(h("ai_temperature", "0.7") or 0.7),
         "max_tokens": int(h("ai_max_tokens", "400") or 400),
         "window": max(1, int(h("ai_window", "6") or 6)),
         "enabled": flag_on("host", "ai_enabled", "1"),
@@ -755,18 +849,20 @@ async def on_message(message: discord.Message):
     if message.guild is None:
         await dm_reply(message)
         return
-    # Passive AI: an @-mention always replies. With conversation mode on, a
-    # plain message also replies while the bot is "still here" (conv_live) —
-    # no @ needed — and every reply refreshes the window. After inactivity it
-    # goes quiet and only @mentions wake it again. Saying "go away" ends the
-    # conversation immediately.
+    # Passive AI: only a direct @Quaestio wakes it. With conversation mode on, a
+    # plain message also replies while the bot is "still here" (conv_live) — no
+    # @ needed — but messages aimed at *other people* (a random @mention) never
+    # wake it, and neither does /ask (see the ask command). Saying "go away"
+    # ends the conversation immediately.
     _ai_cfg = guild_ai_config(message.guild.id)
+    mentions_me = message.guild.me in message.mentions
+    aimed_at_others = any(m != message.guild.me for m in message.mentions)
     if conv_live(message.guild.id, message.channel.id, _ai_cfg) and is_goodbye(message.content):
         await _say_goodbye(message)
-    elif message.guild.me in message.mentions:
+    elif mentions_me:
         if await ai_reply(message) and _ai_cfg.get("conv"):
             conv_mark(message.guild.id, message.channel.id, _ai_cfg["conv_minutes"])
-    elif conv_live(message.guild.id, message.channel.id, _ai_cfg):
+    elif conv_live(message.guild.id, message.channel.id, _ai_cfg) and not aimed_at_others:
         if await ai_reply(message, ping=False):
             conv_mark(message.guild.id, message.channel.id, _ai_cfg["conv_minutes"])
 
@@ -938,15 +1034,19 @@ async def ai_status(interaction: discord.Interaction):
     cfg = guild_ai_config(interaction.guild.id)
     allowed_note = "everywhere" if not (cfg["ai_channels"] or "").strip() else "picked channels only"
     source_note = "shared Quaestio box" if cfg["source"] == "shared" else (f"your own box{f' (in community pool)' if cfg['contribute'] else ''}")
+    persona_note = ""
+    if cfg.get("ai_character"):
+        persona_note = f"\nCharacter: `{cfg['ai_character']}`"
+    personality = get_cfg(interaction.guild.id, "ai_personality", "none")
     await interaction.response.send_message(
         f"**AI settings**\n"
         f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
         f"Source: {source_note}\n"
         f"Model: `{cfg['model']}`\n"
         f"Endpoint: `{cfg['endpoint']}`\n"
-        f"Memory: {cfg['memory']} turns/channel\n"
-        f"Quota: {cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}\n"
-        f"Replies on mention: {'✅' if cfg['ai_mention'] else '❌'}\n"
+        f"Personality: `{personality or 'none'}` · Memory: {cfg['memory']} turns/channel\n"
+        f"Quota: {cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}\n{persona_note}"
+        f"\nReplies on mention: {'✅' if cfg['ai_mention'] else '❌'}\n"
         f"Conversation mode: {'✅ stays ' + str(cfg['conv_minutes']) + ' min after a reply' if cfg['conv'] else '❌ (needs @ each time)'}\n"
         f"Allowed channels: {allowed_note}\n"
         f"Creativity: {cfg['temperature']} · Max reply: {cfg['max_tokens']} tokens",
@@ -979,6 +1079,9 @@ async def ask(interaction: discord.Interaction, prompt: str):
         await interaction.followup.send("▸ sent", ephemeral=True)
         return
     cfg = guild_ai_config(interaction.guild.id)
+    # /ask is an explicit, one-shot question: it never wakes conversation mode
+    # (only @Quaestio does).
+    _conv_until.pop((interaction.guild.id, interaction.channel.id), None)
     if not cfg["enabled"]:
         await interaction.response.send_message("AI chat is disabled here.", ephemeral=True)
         return

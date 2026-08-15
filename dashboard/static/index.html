@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=11">
+<link rel="stylesheet" href="/static/style.css?v=13">
 </head>
 <body>
 
@@ -85,6 +85,8 @@
       </button>
     </div>
 
+    <div class="save-bar hidden" id="save-bar" role="status" aria-live="polite"></div>
+
     <!-- AI -->
     <div class="tab-panel active" id="panel-ai">
       <div class="panel-intro">
@@ -159,15 +161,43 @@
 
         <div class="field-group">
           <label for="ai_personality">Personality</label>
-          <select id="ai_personality" class="model-select">
-            <option value="friendly">Friendly</option>
-            <option value="sage">Wise sage</option>
-            <option value="sarcastic">Sarcastic wit</option>
-            <option value="pirate">Pirate</option>
-            <option value="professional">Professional</option>
-          </select>
-          <p class="hint">A flavor for how the AI talks. Server instructions still override it.</p>
+          <select id="ai_personality" class="model-select"></select>
+          <p class="hint" id="personality-hint">Picks the <strong>tone</strong> of replies — or <strong>None</strong> for the default friendly buddy.</p>
         </div>
+
+        <div class="field-group">
+          <label for="ai_character">Character</label>
+          <select id="ai_character" class="model-select"></select>
+          <p class="hint" id="character-hint">Who the bot pretends to be — overrides the personality's tone, or <strong>None</strong> to disable.</p>
+        </div>
+
+        <div class="card-inner" id="preset-manager">
+          <div class="preset-manager-head">
+            <h4>Custom presets</h4>
+            <p class="muted">Create your own personalities and characters. Yours can be edited and deleted; the built-in ones can't.</p>
+          </div>
+
+          <div class="preset-section">
+            <h5>Personalities</h5>
+            <div class="preset-list" id="preset-personality-list"></div>
+            <div class="preset-form">
+              <input type="text" id="preset-personality-name" placeholder="Title, e.g. Sassy raccoon" maxlength="60">
+              <textarea id="preset-personality-text" rows="2" placeholder="Prompt, e.g. You are a sassy raccoon who roasts people lovingly." maxlength="2000"></textarea>
+              <button class="btn btn-sm" data-preset-add="personality">Add personality</button>
+            </div>
+          </div>
+
+          <div class="preset-section">
+            <h5>Characters</h5>
+            <div class="preset-list" id="preset-character-list"></div>
+            <div class="preset-form">
+              <input type="text" id="preset-character-name" placeholder="Title, e.g. Annoying chef" maxlength="60">
+              <textarea id="preset-character-text" rows="2" placeholder="Prompt, e.g. You are an annoying chef who gives cooking advice for everything." maxlength="2000"></textarea>
+              <button class="btn btn-sm" data-preset-add="character">Add character</button>
+            </div>
+          </div>
+        </div>
+        <p class="hint">A <strong>personality</strong> tints how Quaestio talks. A <strong>character</strong> changes who it pretends to be — pick <strong>None</strong> to turn either off.</p>
 
         <div class="grid-2 fields-row">
           <div class="field-group">
@@ -683,6 +713,6 @@ uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
 </main>
 
 <div class="toast" id="toast"></div>
-<script src="/static/app.js?v=10"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>
