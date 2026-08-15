@@ -964,6 +964,33 @@ def level_for_messages(messages: int) -> int:
     return level
 
 
+# Anti-spam guards for XP: a message only counts towards level/rank if it has
+# between xp_min_words and xp_max_words words, and no more often than once per
+# xp_cooldown seconds per member. This stops people farming ranks with a pasted
+# wiki article, or by sending every word (or letter) as its own message.
+_xp_last = {}  # (guild_id, user_id) -> monotonic time of last counted message
+
+
+def xp_word_count(content: str) -> int:
+    return len([w for w in str(content or "").split() if any(ch.isalnum() for ch in w)])
+
+
+def xp_allowed(guild_id, user_id, content) -> bool:
+    if not flag_on(guild_id, "xp_spam", "1"):
+        return True
+    min_w = int(get_cfg(guild_id, "xp_min_words") or 3)
+    max_w = int(get_cfg(guild_id, "xp_max_words") or 100)
+    cooldown = float(get_cfg(guild_id, "xp_cooldown") or 5)
+    if xp_word_count(content) not in range(min_w, max_w + 1):
+        return False
+    now = time.monotonic()
+    last = _xp_last.get((str(guild_id), str(user_id)), 0.0)
+    if now - last < cooldown:
+        return False
+    _xp_last[(str(guild_id), str(user_id))] = now
+    return True
+
+
 def is_admin(user: discord.Member) -> bool:
     return user.guild_permissions.administrator
 
@@ -1027,6 +1054,8 @@ async def on_message(message: discord.Message):
             conv_mark(message.guild.id, message.channel.id, _ai_cfg["conv_minutes"])
 
     if not flag_on(message.guild.id, "xp_enabled", "1"):
+        return
+    if not xp_allowed(message.guild.id, message.author.id, message.content):
         return
     messages = add_xp(message.guild.id, message.author.id)
     new_level = level_for_messages(messages)

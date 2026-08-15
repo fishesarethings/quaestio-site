@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=15">
+<link rel="stylesheet" href="/static/style.css?v=16">
 </head>
 <body>
 
@@ -188,7 +188,10 @@
                 <div class="preset-emoji-pick">
                   <label>Emoji</label>
                   <button type="button" id="preset-personality-emoji-btn" class="preset-emoji-btn" aria-haspopup="listbox" aria-label="Pick an emoji">✨</button>
-                  <div class="preset-emoji-grid hidden" id="preset-personality-emoji-grid"></div>
+                  <div class="preset-emoji-grid hidden" id="preset-personality-emoji-grid">
+                    <input type="text" class="emoji-search" id="preset-personality-emoji-search" placeholder="Search emoji…" autocomplete="off">
+                    <div class="emoji-search-results" data-results></div>
+                  </div>
                 </div>
                 <textarea id="preset-personality-text" rows="2" placeholder="Prompt, e.g. You are a sassy raccoon who roasts people lovingly." maxlength="2000"></textarea>
               </div>
@@ -207,7 +210,10 @@
                 <div class="preset-emoji-pick">
                   <label>Emoji</label>
                   <button type="button" id="preset-character-emoji-btn" class="preset-emoji-btn" aria-haspopup="listbox" aria-label="Pick an emoji">✨</button>
-                  <div class="preset-emoji-grid hidden" id="preset-character-emoji-grid"></div>
+                  <div class="preset-emoji-grid hidden" id="preset-character-emoji-grid">
+                    <input type="text" class="emoji-search" id="preset-character-emoji-search" placeholder="Search emoji…" autocomplete="off">
+                    <div class="emoji-search-results" data-results></div>
+                  </div>
                 </div>
                 <textarea id="preset-character-text" rows="2" placeholder="Prompt, e.g. You are an annoying chef who gives cooking advice for everything." maxlength="2000"></textarea>
               </div>
@@ -586,6 +592,53 @@
       <div class="card">
         <div class="card-head">
           <span class="card-icon">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </span>
+          <div>
+            <h3>Anti-spam (XP &amp; ranks)</h3>
+            <p>Stops message farming — pasting a wiki article or spamming every word as its own message won't boost your rank.</p>
+          </div>
+        </div>
+
+        <div class="switch-row level-row">
+          <div class="switch-copy">
+            <h3>Filter message spam</h3>
+            <p class="muted">Only messages with a sensible word count, sent at a human pace, count toward XP and the leaderboard.</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="xp_spam"><span></span></label>
+        </div>
+
+        <div class="grid-3 fields-row">
+          <div class="field-group">
+            <label for="xp_min_words">Min words</label>
+            <div class="unit-input">
+              <input type="number" id="xp_min_words" min="1" max="20" placeholder="3">
+              <span class="unit">words</span>
+            </div>
+            <p class="hint">Shorter messages don't count. Kills one-word spam.</p>
+          </div>
+          <div class="field-group">
+            <label for="xp_max_words">Max words</label>
+            <div class="unit-input">
+              <input type="number" id="xp_max_words" min="10" max="500" placeholder="100">
+              <span class="unit">words</span>
+            </div>
+            <p class="hint">Longer messages don't count. Kills pasted articles.</p>
+          </div>
+          <div class="field-group">
+            <label for="xp_cooldown">Pace</label>
+            <div class="unit-input">
+              <input type="number" id="xp_cooldown" min="1" max="60" placeholder="5">
+              <span class="unit">seconds / msg</span>
+            </div>
+            <p class="hint">Min gap between counted messages per member.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
             <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           </span>
           <div>
@@ -770,6 +823,7 @@ uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
 </main>
 
 <div class="toast" id="toast"></div>
-<script src="/static/app.js?v=14"></script>
+<script src="/static/emoji-data.js?v=1"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

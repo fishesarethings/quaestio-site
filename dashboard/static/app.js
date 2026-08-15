@@ -214,6 +214,9 @@ async function loadSettings(id) {
   set("#ai_max_tokens", s.ai_max_tokens);
   set("#welcome_message", s.welcome_message);
   set("#warnlimit", s.warnlimit);
+  set("#xp_min_words", s.xp_min_words);
+  set("#xp_max_words", s.xp_max_words);
+  set("#xp_cooldown", s.xp_cooldown);
   $("#ai_enabled").checked = ON(s.ai_enabled);
   $("#ai_mention").checked = ON(s.ai_mention);
   $("#ai_conv").checked = ON(s.ai_conv);
@@ -222,6 +225,7 @@ async function loadSettings(id) {
   $("#ai_contribute").checked = ON(s.ai_contribute);
   $("#welcome_enabled").checked = ON(s.welcome_enabled);
   $("#xp_enabled").checked = ON(s.xp_enabled);
+  $("#xp_spam").checked = ON(s.xp_spam);
   $("#level_announce").checked = ON(s.level_announce);
   $("#birthday_enabled").checked = ON(s.birthday_enabled);
 
@@ -347,21 +351,80 @@ const modelSpeedLabel = (m) => MODEL_SPEED[m] ? ` — ${MODEL_SPEED[m]}` : "";
 
 let _presetData = {};
 
-const PRESET_EMOJI_CHOICES = [
-  "😀","😎","🤖","👾","🐱","🐶","🦊","🐻","🧸","🌸","🌵","🔥","🌊","⚡","🌈","🍕",
-  "🍺","🧁","🎂","🎮","🎯","🧙","🦸","🦹","🧛","🤠","🕵️","💼","🏴‍☠️","👵","🧓","🐉",
-  "🦄","🐢","🦁","🐸","🦖","🍄","🎩","🕶️","☕","🌙","✨","💎","🎵","📚","🏆","🛡️",
-];
+function emojiSearch(query) {
+  const q = (query || "").trim().toLowerCase();
+  if (!q) {
+    const counts = {};
+    QUAESTIO_EMOJI.forEach((x) => (counts[x.c] = (counts[x.c] || 0) + 1));
+    return { list: QUAESTIO_EMOJI, counts };
+  }
+  const words = q.split(/\s+/);
+  const list = QUAESTIO_EMOJI.filter((x) =>
+    words.every(
+      (w) =>
+        x.c.includes(w) ||
+        (x.k || []).some((kw) => kw.includes(w)) ||
+        (x.t || "").includes(w)
+    )
+  );
+  return { list };
+}
+
+const EMOJI_GROUP_LABELS = {
+  smileys: "Smileys & faces",
+  people: "People & roles",
+  animals: "Animals & nature",
+  food: "Food & drink",
+  activity: "Activity & sport",
+  travel: "Travel & places",
+  objects: "Objects",
+  symbols: "Symbols",
+  flags: "Flags",
+};
+
+function renderEmojiResults(grid, results) {
+  const box = grid.querySelector("[data-results]");
+  if (!box) return;
+  if (!results.list.length) {
+    box.innerHTML = `<p class="emoji-no-results">No emoji match “${results.query}”.</p>`;
+    return;
+  }
+  let html = "";
+  if (results.counts) {
+    for (const [group, count] of Object.entries(results.counts)) {
+      html += `<h4 class="emoji-group-title">${EMOJI_GROUP_LABELS[group] || group} <span>${count}</span></h4>`;
+      html += results.list
+        .filter((x) => x.c === group)
+        .map((x) => `<button type="button" class="emoji-cell" data-emoji="${x.e}">${x.e}</button>`)
+        .join("");
+    }
+    html = `<div class="emoji-group-blocks">${html}</div>`;
+  } else {
+    html = results.list
+      .map((x) => `<button type="button" class="emoji-cell" data-emoji="${x.e}">${x.e}</button>`)
+      .join("");
+  }
+  box.innerHTML = html;
+}
 
 function initEmojiPickers() {
   ["personality", "character"].forEach((kind) => {
     const btn = $(`#preset-${kind}-emoji-btn`);
     const grid = $(`#preset-${kind}-emoji-grid`);
+    const search = $(`#preset-${kind}-emoji-search`);
     if (!btn || !grid) return;
-    grid.innerHTML = PRESET_EMOJI_CHOICES.map((e) => `<button type="button" class="emoji-cell" data-emoji="${e}">${e}</button>`).join("");
+    const results = emojiSearch("");
+    renderEmojiResults(grid, results);
     btn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      grid.classList.toggle("hidden");
+      const wasHidden = grid.classList.contains("hidden");
+      $$(".preset-emoji-grid").forEach((g) => g.classList.add("hidden"));
+      grid.classList.toggle("hidden", !wasHidden);
+      if (wasHidden && search) {
+        search.value = "";
+        renderEmojiResults(grid, emojiSearch(""));
+        search.focus();
+      }
     });
     grid.addEventListener("click", (ev) => {
       const cell = ev.target.closest(".emoji-cell");
@@ -371,6 +434,12 @@ function initEmojiPickers() {
       if (nameEl && !nameEl.value.trim()) nameEl.focus();
       grid.classList.add("hidden");
     });
+    if (search) {
+      search.addEventListener("input", () => {
+        renderEmojiResults(grid, emojiSearch(search.value));
+      });
+      search.addEventListener("click", (ev) => ev.stopPropagation());
+    }
   });
   document.addEventListener("click", (ev) => {
     if (ev.target.closest(".preset-emoji-pick")) return;
@@ -780,6 +849,10 @@ function readSettings() {
     levelrole: refValue("levelrole"),
     xp_enabled: b("#xp_enabled"),
     level_announce: b("#level_announce"),
+    xp_spam: b("#xp_spam"),
+    xp_min_words: $("#xp_min_words").value,
+    xp_max_words: $("#xp_max_words").value,
+    xp_cooldown: $("#xp_cooldown").value,
     warnlimit: $("#warnlimit").value,
     birthday_enabled: b("#birthday_enabled"),
     birthday_channel: refValue("birthday_channel"),

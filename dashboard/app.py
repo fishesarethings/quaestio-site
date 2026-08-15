@@ -414,6 +414,7 @@ SETTING_KEYS = [
     "ai_conv", "ai_conv_minutes",
     "welcome_enabled", "welcome_channel", "welcome_message",
     "welcome_role", "levelrole", "level_announce", "xp_enabled", "warnlimit",
+    "xp_spam", "xp_min_words", "xp_max_words", "xp_cooldown",
     "birthday_enabled", "birthday_channel",
 ]
 
