@@ -77,7 +77,10 @@ def systemd_active():
 def read_env(k):
     env_file = os.path.join(BOT_DIR, ".env")
     if not os.path.isfile(env_file):
-        return None
+        cwd_env = os.path.join(os.getcwd(), ".env")
+        env_file = cwd_env if os.path.isfile(cwd_env) else None
+    if not env_file:
+        return os.environ.get(k)
     try:
         with open(env_file) as f:
             for line in f:
@@ -211,9 +214,16 @@ def status():
 # Contribution to the resource pool
 # ---------------------------------------------------------------------------
 
+def _anon_name() -> str:
+    import secrets
+    return "node-" + secrets.token_hex(2)
+
+
 def contribute():
     say("SELF-HOST & CONTRIBUTE — lend part of your AI box to the community pool.")
     say("The pool lets Quaestio route shared-AI servers across many Ollama boxes.\n")
+    say("Your identity stays anonymous: the pool only ever sees a random node ID, "
+        "and your endpoint + model are encrypted at rest.")
     endpoint = input("Your Ollama URL [default http://127.0.0.1:11434]: ").strip() or "http://127.0.0.1:11434"
     model = input("Model you're sharing [default qwen2.5:1.5b]: ").strip() or "qwen2.5:1.5b"
     share = input("How much of your box to share, percent [10-100, default 50]: ").strip() or "50"
@@ -221,24 +231,43 @@ def contribute():
         share = max(10, min(100, int(share)))
     except ValueError:
         share = 50
-    name = input(f"Your name/label [default {os.environ.get('USER', 'you')}]: ").strip() or os.environ.get("USER", "you")
     say("Registering your contribution in the local pool…", DIM)
     # The pool is stored in the bot's own database so it routes across it.
-    db_path = read_env("DB_PATH") or os.path.join(BOT_DIR, "quaestio.db")
-    sys.path.insert(0, BOT_DIR)
+    db_path = read_env("DB_PATH")
+    if not db_path:
+        cand = os.path.join(BOT_DIR, "quaestio.db")
+        db_path = cand if os.path.isdir(BOT_DIR) else os.path.join(os.getcwd(), "quaestio.db")
+    flag = os.path.join(os.path.dirname(os.path.abspath(db_path)), ".contributed")
+    try:
+        if os.path.isfile(flag):
+            say("This box is already contributing to the pool. Remove it from the "
+                "dashboard Host → Community pool, or delete the marker file and "
+                "re-run.", DIM)
+            return
+    except Exception:
+        pass
     import sqlite3
+    # Encrypt at rest with the same key the bot uses.
+    sys.path.insert(0, BOT_DIR)
+    try:
+        import config as quaestio_cfg
+        enc_endpoint = quaestio_cfg.maybe_encrypt("pool_endpoint", endpoint)
+        enc_model = quaestio_cfg.maybe_encrypt("pool_model", model)
+    except Exception:
+        enc_endpoint, enc_model = endpoint, model
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) "
         "VALUES (?, ?, ?, ?, 1, 'cli', ?)",
-        (name, endpoint, model, share, datetime.datetime.now().isoformat()),
+        (_anon_name(), enc_endpoint, enc_model, share, datetime.datetime.now().isoformat()),
     )
     conn.commit()
     conn.close()
-    say(f"Done. You're contributing {share}% of your box "
-        f"({endpoint}, {model}) to the pool.", GREEN)
+    say(f"Done. You're contributing {share}% of your box to the pool as an "
+        "anonymous node.", GREEN)
     say("Other servers can now hand off AI calls to you. Lower the number anytime "
-        "with the dashboard Host → Community pool, or re-run this command.")
+        "with the dashboard Host → Community pool, or re-run this command. No one "
+        "can see your endpoint, model or who you are.")
 
 
 # ---------------------------------------------------------------------------

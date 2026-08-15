@@ -6,6 +6,7 @@ let me = null;
 let guilds = [];
 let activeGuild = null;
 let currentTab = "ai";
+let currentOs = "macos";
 let modelState = null;
 
 const TOKEN_KEY = "qa_token";
@@ -67,7 +68,7 @@ function toast(msg, isErr = false) {
 }
 
 function show(view) {
-  ["login-view", "picker-view", "settings-view", "host-view"].forEach((id) => $("#" + id).classList.toggle("hidden", id !== view));
+  ["login-view", "picker-view", "settings-view", "selfhost-view", "host-view"].forEach((id) => $("#" + id).classList.toggle("hidden", id !== view));
   $$("#nav-links a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
 }
 
@@ -94,11 +95,13 @@ function renderUser() {
 }
 
 function renderNav() {
-  $("#nav-links").innerHTML = `
-    ${me && guilds.length ? '<a data-view="picker-view" class="active">Servers</a>' : ""}
-    ${me && me.is_host_admin ? '<a data-view="host-view">Host</a>' : ""}`;
+  const links = [];
+  if (me && guilds.length) links.push('<a data-view="picker-view" class="active">Servers</a>');
+  if (me) links.push('<a data-view="selfhost-view">Self-host</a>');
+  if (me && me.is_host_admin) links.push('<a data-view="host-view">Host</a>');
+  $("#nav-links").innerHTML = links.join("");
   $$("#nav-links a").forEach((a) =>
-    a.addEventListener("click", () => { if (a.dataset.view === "picker-view") renderPicker(); show(a.dataset.view); })
+    a.addEventListener("click", () => { if (a.dataset.view === "picker-view") renderPicker(); if (a.dataset.view === "selfhost-view") renderSelfHost(); show(a.dataset.view); })
   );
 }
 
@@ -917,7 +920,6 @@ async function renderHost() {
     poolEl.innerHTML = `
       <div class="pool-stat-line">${list.filter((c) => c.enabled).length} contributor${list.filter((c) => c.enabled).length === 1 ? "" : "s"} · ${totalShare}% shared</div>
       <form class="pool-add" id="pool-add">
-        <input type="text" id="pool-name" placeholder="Name (e.g. Jeff)" autocomplete="off">
         <input type="text" id="pool-endpoint" placeholder="http://ip:11434" autocomplete="off">
         <select id="pool-share">
           <option value="10">10%</option><option value="25">25%</option>
@@ -925,11 +927,10 @@ async function renderHost() {
         </select>
         <button class="btn btn-primary" type="submit">Add</button>
       </form>
+      <p class="muted">Contributors stay anonymous: the bot generates a random node ID and encrypts the endpoint + model at rest, so no one can piece together who lends what.</p>
       ${list.length ? list.map((c) => `
         <div class="pool-row">
-          <span class="pool-name">${ESCAPED(c.name || "contributor")}</span>
-          <span class="pool-model">${ESCAPED(c.model || "default model")}</span>
-          <span class="pool-window">${ESCAPED((c.endpoint || "").split("//")[1] || c.endpoint)}</span>
+          <span class="pool-name">${ESCAPED(c.name || "node")}</span>
           <select class="pool-share-edit" data-id="${c.id}">
             ${[10, 25, 50, 75, 100].map((v) => `<option value="${v}" ${Number(c.share) === v ? "selected" : ""}>${v}%</option>`).join("")}
           </select>
@@ -942,10 +943,9 @@ async function renderHost() {
     if (addForm) {
       addForm.addEventListener("submit", (ev) => {
         ev.preventDefault();
-        const name = $("#pool-name").value.trim();
         const endpoint = $("#pool-endpoint").value.trim();
         if (!endpoint) { toast("✗ Endpoint is required"); return; }
-        api("/api/host/pool", { name, endpoint, model: s.ai_model || "", share: $("#pool-share").value })
+        api("/api/host/pool", { endpoint, model: s.ai_model || "", share: $("#pool-share").value })
           .then(() => { toast("✓ Contributor added to the pool"); renderHost(); })
           .catch((e) => toast("✗ " + e));
       });
@@ -982,6 +982,19 @@ async function renderHost() {
   }
 }
 
+async function renderSelfHost() {
+  applyOsTab(currentOs || "macos");
+  const el = $("#pool-stats-selfhost");
+  try {
+    const pool = (await api("/api/pool")) || {};
+    el.innerHTML = `
+      <div class="stat-chip"><span class="num">${pool.nodes || 0}</span><span class="lbl">anonymous nodes</span></div>
+      <div class="stat-chip"><span class="num">${pool.total_share || 0}%</span><span class="lbl">capacity shared</span></div>`;
+  } catch {
+    el.innerHTML = "";
+  }
+}
+
 function applyOsTab(os) {
   $$("#os-seg .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.os === os));
   const c = OS_CMDS[os];
@@ -1002,11 +1015,13 @@ function fmtBytes(n) {
 /* ---------- events ---------- */
 function wireEvents() {
   $("#back-btn").addEventListener("click", (e) => { e.preventDefault(); renderPicker(); show("picker-view"); });
+  const shBack = $("#selfhost-back-btn");
+  if (shBack) shBack.addEventListener("click", (e) => { e.preventDefault(); renderPicker(); show("picker-view"); });
 
   $("#guild-search").addEventListener("input", drawPicker);
 
   $$("#os-seg .seg-btn").forEach((b) =>
-    b.addEventListener("click", () => applyOsTab(b.dataset.os))
+    b.addEventListener("click", () => { currentOs = b.dataset.os; applyOsTab(b.dataset.os); })
   );
 
   $$("#host-mode-seg .seg-btn").forEach((b) =>

@@ -238,7 +238,29 @@ def db_init():
     if "emoji" not in pcols:
         conn.execute("ALTER TABLE ai_presets ADD COLUMN emoji TEXT DEFAULT '✨'")
     conn.commit()
+    _migrate_pool_anonymize(conn)
     conn.close()
+
+
+def _migrate_pool_anonymize(conn):
+    """One-time privacy migration: encrypt leftover plaintext endpoints/models
+    and replace any real-name labels with anonymous node IDs so identities
+    can't leak from old rows."""
+    rows = conn.execute("SELECT id, name, endpoint, model FROM hosters").fetchall()
+    for r in rows:
+        cur_name = (r["name"] or "").strip()
+        if not cur_name.startswith("node-"):
+            conn.execute("UPDATE hosters SET name=? WHERE id=?",
+                         (pool_anon_name(), r["id"]))
+        ep = r["endpoint"] or ""
+        if ep and not ep.startswith("enc:"):
+            conn.execute("UPDATE hosters SET endpoint=? WHERE id=?",
+                         (maybe_encrypt("pool_endpoint", ep), r["id"]))
+        m = r["model"] or ""
+        if m and not m.startswith("enc:"):
+            conn.execute("UPDATE hosters SET model=? WHERE id=?",
+                         (maybe_encrypt("pool_model", m), r["id"]))
+    conn.commit()
 
 
 def guild_presets(guild_id, kind):
@@ -405,10 +427,22 @@ def list_ollama_models(endpoint: str) -> list:
 # Each hoster registers an endpoint + a model + what % of their box they share.
 # Shared-source servers are routed across the pool, weighted by share amount.
 # 0-host pool simply falls back to the host's own box — the pool is transparent.
+#
+# Privacy by design: contributors are anonymous (random node IDs, no real
+# names) and their endpoints/models are encrypted at rest. The bot decrypts
+# them only in memory to route calls; the dashboard never exports them raw.
 # ---------------------------------------------------------------------------
 
+def pool_anon_name() -> str:
+    """A random, unlinkable node label like 'node-7f3a'."""
+    return "node-" + "".join(random.choices("0123456789abcdef", k=4))
+
+
 def pool_hosters(enabled_only=True):
-    """All registered pool contributors: {id, name, endpoint, model, share, enabled}."""
+    """All registered pool contributors, decrypted in memory for routing.
+    Returns {id, name, endpoint, model, share, enabled} with endpoint/model
+    decrypted so the bot can route — never shown to anyone as raw values.
+    """
     conn = db()
     rows = conn.execute(
         "SELECT id, name, endpoint, model, share, enabled FROM hosters"
@@ -416,7 +450,13 @@ def pool_hosters(enabled_only=True):
         + " ORDER BY name"
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        h = dict(r)
+        h["endpoint"] = maybe_decrypt("pool_endpoint", h["endpoint"] or "")
+        h["model"] = maybe_decrypt("pool_model", h["model"] or "")
+        out.append(h)
+    return out
 
 
 def pool_total_share() -> int:
@@ -427,14 +467,25 @@ def pool_total_share() -> int:
     return int(row[0] or 0)
 
 
-def pool_add(name, endpoint, model, share=50):
+def pool_add(endpoint, model, share=50, name=None):
+    """Add a contributor. Endpoint + model are encrypted at rest; the name is
+    a random anonymous node ID unless one is supplied."""
     conn = db()
+    name = (name or pool_anon_name()).strip()[:80]
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?, ?, ?, ?, 1, ?, ?)",
-        (name, endpoint, model, int(share), name, datetime.datetime.now(datetime.timezone.utc).isoformat()),
+        (
+            name or pool_anon_name(),
+            maybe_encrypt("pool_endpoint", endpoint),
+            maybe_encrypt("pool_model", model),
+            int(share),
+            "bot",
+            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        ),
     )
     conn.commit()
     conn.close()
+    return name or pool_anon_name()
 
 
 def pool_remove(hoster_id):

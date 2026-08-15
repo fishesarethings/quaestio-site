@@ -29,6 +29,8 @@ SENSITIVE_KEYS = {
     "ai_endpoint",
     "welcome_message",
     "tag_editor",
+    "pool_endpoint",
+    "pool_model",
 }
 
 _f = None

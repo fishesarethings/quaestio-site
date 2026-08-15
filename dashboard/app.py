@@ -110,7 +110,30 @@ def db_init():
     if "emoji" not in pcols:
         conn.execute("ALTER TABLE ai_presets ADD COLUMN emoji TEXT DEFAULT '✨'")
     conn.commit()
+    _migrate_pool_anonymize(conn)
     conn.close()
+
+
+def _migrate_pool_anonymize(conn):
+    """One-time privacy migration: encrypt leftover plaintext endpoints/models
+    and replace any real-name labels with anonymous node IDs so identities
+    can't leak from old rows."""
+    import secrets as _secrets
+    rows = conn.execute("SELECT id, name, endpoint, model FROM hosters").fetchall()
+    for r in rows:
+        cur_name = (r["name"] or "").strip()
+        if not cur_name.startswith("node-"):
+            conn.execute("UPDATE hosters SET name=? WHERE id=?",
+                         ("node-" + _secrets.token_hex(2), r["id"]))
+        ep = r["endpoint"] or ""
+        if ep and not ep.startswith("enc:"):
+            conn.execute("UPDATE hosters SET endpoint=? WHERE id=?",
+                         (qconfig.maybe_encrypt("pool_endpoint", ep), r["id"]))
+        m = r["model"] or ""
+        if m and not m.startswith("enc:"):
+            conn.execute("UPDATE hosters SET model=? WHERE id=?",
+                         (qconfig.maybe_encrypt("pool_model", m), r["id"]))
+    conn.commit()
 
 
 db_init()
@@ -581,6 +604,19 @@ async def api_warns(request: Request, guild_id: int):
     return {"warns": [{"user_id": r["user_id"], "reason": r["reason"], "at": r["at"]} for r in rows]}
 
 
+@app.get("/api/pool")
+async def api_pool(request: Request):
+    """Anonymous pool stats for any signed-in admin. Identities are never
+    included — only totals, so nobody can piece together who contributes."""
+    session_user(request)
+    conn = db()
+    row = conn.execute(
+        "SELECT COUNT(*) c, COALESCE(SUM(share),0) s FROM hosters WHERE enabled=1"
+    ).fetchone()
+    conn.close()
+    return {"nodes": int(row["c"] or 0), "total_share": int(row["s"] or 0)}
+
+
 @app.get("/api/host/pool")
 async def api_host_pool(request: Request):
     await require_host_admin(request)
@@ -589,28 +625,40 @@ async def api_host_pool(request: Request):
         "SELECT id, name, endpoint, model, share, enabled FROM hosters ORDER BY name"
     ).fetchall()
     conn.close()
-    return {"contributors": [dict(r) for r in rows],
+    # Privacy: never export raw endpoints or models. The management UI only
+    # needs the anonymous node ID, its share and whether it's enabled.
+    contributors = []
+    for r in rows:
+        d = dict(r)
+        d["name"] = d.get("name")
+        d.pop("endpoint", None)
+        d.pop("model", None)
+        contributors.append(d)
+    return {"contributors": contributors,
             "total_share": sum(int(r["share"]) for r in rows if r["enabled"])}
 
 
 @app.post("/api/host/pool")
 async def api_host_pool_add(request: Request):
     await require_host_admin(request)
+    import secrets as _secrets
     body = await request.json()
-    name = (body.get("name") or "").strip() or "contributor"
     endpoint = (body.get("endpoint") or "").strip()
     if not endpoint:
         raise HTTPException(400, "Endpoint is required")
-    model = (body.get("model") or "").strip() or "qwen2.5:0.5b"
+    model = (body.get("model") or "").strip() or "default"
     share = max(0, min(100, int(body.get("share", 50) or 50)))
+    name = (body.get("name") or "").strip()[:80] or "node-" + _secrets.token_hex(2)
     conn = db()
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?, ?, ?, ?, 1, 'dash', ?)",
-        (name, endpoint, model, share, datetime.datetime.now(datetime.timezone.utc).isoformat()),
+        (name, qconfig.maybe_encrypt("pool_endpoint", endpoint),
+         qconfig.maybe_encrypt("pool_model", model), share,
+         datetime.datetime.now(datetime.timezone.utc).isoformat()),
     )
     conn.commit()
     conn.close()
-    return {"ok": True}
+    return {"ok": True, "name": name}
 
 
 @app.post("/api/host/pool/{hoster_id}")
