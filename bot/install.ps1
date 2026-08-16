@@ -140,7 +140,7 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     }
 }
 
-# --- 5. Token / .env ---------------------------------------------------------
+# --- 5. Config (.env) — the Discord token is always optional -------------------
 $EnvFile = Join-Path $BotDir ".env"
 $writeEnv = $true
 if (Test-Path $EnvFile) {
@@ -148,20 +148,18 @@ if (Test-Path $EnvFile) {
     if ($content -match "your-bot-token-here") { $writeEnv = $true } else { $writeEnv = $false }
 }
 if ($writeEnv) {
+    $envLines = @()
     if ($env:BOT_TOKEN) {
-        $token = $env:BOT_TOKEN
         Say "Using BOT_TOKEN from the environment."
+        $envLines += "BOT_TOKEN=$env:BOT_TOKEN"
     } else {
-        Warn "Discord bot token needed (Developer Portal → your app → Bot → Reset Token)."
-        $token = Read-Host "Paste your bot token"
-        if (-not $token) { Die "No token given." }
+        Warn "No Discord bot token set — that's fine. Add one later with:  quaestio settings"
     }
-    $envLines = @("BOT_TOKEN=$token")
     if ($RemoteOllama) { $envLines += "OLLAMA_BASE_URL=$RemoteOllama" } else { $envLines += "OLLAMA_BASE_URL=http://127.0.0.1:11434" }
     $envLines += "OLLAMA_MODEL=$Model"
     $envLines += "RPC_LARGE_IMAGE=logo"
     Set-Content -Path $EnvFile -Value ($envLines -join "`n")
-    Say "Token saved to $EnvFile."
+    Say "Config written to $EnvFile (permissions 600)."
 } else {
     Say "Config already present at $EnvFile."
 }

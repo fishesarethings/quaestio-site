@@ -139,7 +139,11 @@ say "Installing dependencies…"
 # everything with live progress. Falls back to the classic Q&A flow below.
 INSTALL_WIZARD="$BOT_DIR/install_wizard.py"
 WIZARD_OK=0
-if [[ -f "$INSTALL_WIZARD" ]] && [[ -t 0 ]] && [[ -z "${QUAESTIO_NO_WIZARD:-}" ]]; then
+# A controlling terminal (/dev/tty) exists even when this script is piped in
+# (curl … | bash), so the full-screen wizard can open. Only skip it when the
+# terminal is truly absent (cron, CI, ssh without -t) or QUAESTIO_NO_WIZARD=1.
+if [[ -f "$INSTALL_WIZARD" ]] && { [[ -t 0 ]] || [[ -e /dev/tty ]]; } \
+   && [[ -z "${QUAESTIO_NO_WIZARD:-}" ]]; then
   if "$VENV/bin/python" -c "import textual" >/dev/null 2>&1; then
     say "Opening the interactive installer (full-screen TUI)…"
     say "Use ↑/↓ or Tab to move, Enter/Space to pick, Esc to go back."
@@ -150,7 +154,9 @@ if [[ -f "$INSTALL_WIZARD" ]] && [[ -t 0 ]] && [[ -z "${QUAESTIO_NO_WIZARD:-}" ]
     QUAESTIO_DIR="$INSTALL_DIR" \
     QUAESTIO_KEY_FILE="${QUAESTIO_KEY_FILE:-}" \
     QUAESTIO_SRC="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}" \
-      "$VENV/bin/python" "$INSTALL_WIZARD" && WIZARD_OK=1
+      "$VENV/bin/python" "$INSTALL_WIZARD" < /dev/tty && WIZARD_OK=1
+  else
+    warn "Textual isn't installed in the venv yet — the classic text flow will be used."
   fi
 fi
 if [[ "$WIZARD_OK" == "1" ]]; then
@@ -234,24 +240,21 @@ else
   warn "Ollama not detected — the AI commands will be offline until you install it."
 fi
 
-# --- 5. Token / .env -----------------------------------------------------------
+# --- 5. Config (.env) — the Discord token is always optional -------------------
+# Quaestio starts without one; add it anytime with `quaestio settings`.
 ENV_FILE="$BOT_DIR/.env"
+rebuild=0
 if [[ ! -f "$ENV_FILE" ]] || ! grep -q '[^#]' "$ENV_FILE" 2>/dev/null || grep -qi 'your-bot-token-here' "$ENV_FILE"; then
+  rebuild=1
+fi
+if [[ "$rebuild" == "1" ]]; then
   if [[ -n "${BOT_TOKEN:-}" ]]; then
-    token="$BOT_TOKEN"
     say "Using BOT_TOKEN from the environment."
+    printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN" > "$ENV_FILE"
   else
-    echo
-    warn "Discord bot token needed (Developer Portal → your app → Bot → Reset Token)."
-    if [[ -t 0 ]]; then
-      read -r -p "Paste your bot token (hidden): " -s token
-      echo
-    else
-      die "Non-interactive run — set BOT_TOKEN=... and re-run, or write $ENV_FILE yourself."
-    fi
-    [[ -z "$token" ]] && die "No token given."
+    : > "$ENV_FILE"
+    warn "No Discord bot token set — that's fine. Add one later with:  quaestio settings"
   fi
-  printf 'BOT_TOKEN=%s\n' "$token" > "$ENV_FILE"
   if [[ -n "$REMOTE_OLLAMA" ]]; then
     printf 'OLLAMA_BASE_URL=%s\n' "$REMOTE_OLLAMA" >> "$ENV_FILE"
   else
@@ -259,7 +262,7 @@ if [[ ! -f "$ENV_FILE" ]] || ! grep -q '[^#]' "$ENV_FILE" 2>/dev/null || grep -q
   fi
   printf 'OLLAMA_MODEL=%s\nRPC_LARGE_IMAGE=logo\n' "$MODEL" >> "$ENV_FILE"
   chmod 600 "$ENV_FILE"
-  say "Token saved to $ENV_FILE (permissions 600)."
+  say "Config written to $ENV_FILE (permissions 600)."
 else
   say "Config already present at $ENV_FILE."
 fi

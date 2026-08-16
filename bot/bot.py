@@ -237,9 +237,25 @@ def db_init():
     pcols = {r[1] for r in conn.execute("PRAGMA table_info(ai_presets)").fetchall()}
     if "emoji" not in pcols:
         conn.execute("ALTER TABLE ai_presets ADD COLUMN emoji TEXT DEFAULT '✨'")
+    _migrate_pool_health(conn)
     conn.commit()
     _migrate_pool_anonymize(conn)
     conn.close()
+
+
+def _migrate_pool_health(conn):
+    """Add pool-host health tracking so the community pool recovers on its own
+    when a computer goes offline (laptop lid closed, connection dropped) and
+    comes back later."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(hosters)").fetchall()}
+    if "failed" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN failed INTEGER DEFAULT 0")
+    if "down_until" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN down_until TEXT DEFAULT ''")
+    if "last_ok" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN last_ok TEXT DEFAULT ''")
+    if "last_fail" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''")
 
 
 def _migrate_pool_anonymize(conn):
@@ -337,6 +353,37 @@ async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float 
     return response
 
 
+async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.8, max_tokens: int = 400) -> str:
+    """Ask the AI with automatic pool failover + health tracking.
+
+    Tries the configured pool endpoints in order (skipping hosts that are
+    cooling down after failures), then the host's own box. A computer that
+    goes offline — closed laptop lid, dropped connection — is marked and
+    skipped for a short cooldown, then automatically retried and trusted
+    again once it's back. Returns the first successful reply.
+    """
+    primary = (cfg.get("endpoint") or "").strip()
+    chain = [primary]
+    for e in (cfg.get("fallbacks") or []):
+        if e and e != primary and e not in chain:
+            chain.append(e)
+    if not chain:
+        chain = [""]
+    last_err = None
+    for ep in chain:
+        if not ep:
+            continue
+        try:
+            answer = await ask_ollama(ep, cfg["model"], prompt, temperature, max_tokens)
+            pool_record(ep, ok=True)
+            return answer
+        except ConnectionError as exc:
+            pool_record(ep, ok=False)
+            last_err = exc
+            continue
+    raise last_err or ConnectionError("AI is offline — no model box replied.")
+
+
 def guild_ai_config(guild_id):
     """Per-server AI settings (admin-overridable via web UI) merged over defaults.
 
@@ -384,9 +431,10 @@ def guild_ai_config(guild_id):
         return base
 
     endpoint = host("ai_endpoint", OLLAMA_BASE_URL)
-    pool_endpoint = pick_pool_endpoint(base["model"])
-    if pool_endpoint:
-        endpoint = pool_endpoint
+    pool_cands = pool_candidates(base["model"], limit=4)
+    pool_eps = [(c["endpoint"] or "").strip() for c in pool_cands if (c["endpoint"] or "").strip()]
+    if pool_eps:
+        endpoint = pool_eps[0]
     host_memory = max(1, int(host("ai_memory", MEMORY_DEFAULT) or MEMORY_DEFAULT))
     host_quota = max(0, int(host("ai_quota", "0") or 0))
     memory = max(1, int(get_cfg(guild_id, "ai_memory", host_memory) or host_memory))
@@ -397,6 +445,12 @@ def guild_ai_config(guild_id):
         if host_quota:
             quota = min(quota, host_quota)
     base["endpoint"] = endpoint
+    # Failover chain for shared boxes: other healthy pool hosts first, then the
+    # host's own box as the last resort. See ask_ollama_any().
+    base["fallbacks"] = [e for e in pool_eps[1:] if e and e != endpoint]
+    own_ep = (get_cfg("host", "ai_endpoint", "") or OLLAMA_BASE_URL or "").strip()
+    if own_ep and own_ep != endpoint and own_ep not in base["fallbacks"]:
+        base["fallbacks"].append(own_ep)
     base["memory"] = memory
     base["quota"] = quota
     return base
@@ -438,14 +492,21 @@ def pool_anon_name() -> str:
     return "node-" + "".join(random.choices("0123456789abcdef", k=4))
 
 
+POOL_FAIL_FLAKY = 2     # consecutive failures before a host is treated as flaky
+POOL_FAIL_DOWN = 5      # consecutive failures before a host sits out for a while
+POOL_COOLDOWN = 600     # seconds a "down" host is skipped, then retried
+POOL_HEALTH_INTERVAL = 300  # how often the bot pings pool hosts to refresh health
+
+
 def pool_hosters(enabled_only=True):
     """All registered pool contributors, decrypted in memory for routing.
-    Returns {id, name, endpoint, model, share, enabled} with endpoint/model
-    decrypted so the bot can route — never shown to anyone as raw values.
+    Returns {id, name, endpoint, model, share, enabled, failed, down_until,
+    last_ok, last_fail} with endpoint/model decrypted so the bot can route —
+    never shown to anyone as raw values.
     """
     conn = db()
     rows = conn.execute(
-        "SELECT id, name, endpoint, model, share, enabled FROM hosters"
+        "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail FROM hosters"
         + (" WHERE enabled=1" if enabled_only else "")
         + " ORDER BY name"
     ).fetchall()
@@ -455,8 +516,68 @@ def pool_hosters(enabled_only=True):
         h = dict(r)
         h["endpoint"] = maybe_decrypt("pool_endpoint", h["endpoint"] or "")
         h["model"] = maybe_decrypt("pool_model", h["model"] or "")
+        h["failed"] = h["failed"] or 0
+        h["down_until"] = h["down_until"] or ""
         out.append(h)
     return out
+
+
+def _pool_healthy(h, now=None) -> bool:
+    """Is the host currently worth routing to? A host in its cooldown window
+    (offline computer) is skipped so we don't hammer it — it comes back on
+    its own once the cooldown passes."""
+    du = (h.get("down_until") or "")
+    if not du:
+        return True
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    return now.isoformat() > du
+
+
+def pool_record(endpoint, ok: bool):
+    """Note success/failure against one host so the pool adapts to computers
+    that come and go (laptop lids, dropped links). A run of failures parks the
+    host for POOL_COOLDOWN seconds; a success clears it right away."""
+    ep = (endpoint or "").strip().rstrip("/")
+    if not ep:
+        return
+    now = datetime.datetime.now(datetime.timezone.utc)
+    conn = db()
+    for r in conn.execute("SELECT id, endpoint FROM hosters WHERE enabled=1").fetchall():
+        stored = maybe_decrypt("pool_endpoint", r["endpoint"] or "").strip().rstrip("/")
+        if stored != ep:
+            continue
+        hid = int(r["id"])
+        if ok:
+            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=? WHERE id=?",
+                         (now.isoformat(), hid))
+            continue
+        conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now.isoformat(), hid))
+        fails = conn.execute("SELECT failed FROM hosters WHERE id=?", (hid,)).fetchone()
+        if fails and (fails["failed"] or 0) >= POOL_FAIL_DOWN:
+            until = (now + datetime.timedelta(seconds=POOL_COOLDOWN)).isoformat()
+            conn.execute("UPDATE hosters SET down_until=? WHERE id=?", (until, hid))
+    conn.commit()
+    conn.close()
+
+
+def pool_candidates(model="", limit=6):
+    """Pool endpoints healthy enough to try, weighted by share, newest-first
+    on equal weight. Never picks this machine's own box. Returns ordered
+    list of dicts so the caller can fail over across several hosts."""
+    own = (get_cfg("host", "ai_endpoint", OLLAMA_BASE_URL) or "").strip().rstrip("/")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    hosted = [h for h in pool_hosters() if _pool_healthy(h, now)]
+    hosted = [h for h in hosted if (h["endpoint"] or "").strip().rstrip("/") != own]
+    matching = [h for h in hosted if model and h["model"] and model in h["model"]]
+    pool = matching or hosted
+    picked, remaining = [], list(pool)
+    while remaining and len(picked) < max(1, min(int(limit), 8)):
+        weights = [max(h["share"], 0) or 1 for h in remaining]
+        ch = random.choices(remaining, weights=weights, k=1)[0]
+        picked.append(ch)
+        remaining.remove(ch)
+    return picked
 
 
 def pool_total_share() -> int:
@@ -506,15 +627,35 @@ def pool_set(hoster_id, enabled=None, share=None):
 
 
 def pick_pool_endpoint(model="") -> str:
-    """Pick an endpoint from the pool (weighted by share). Empty pool → ""."""
-    hosters = pool_hosters()
-    if not hosters:
-        return ""
-    matching = [h for h in hosters if model and h["model"] and model in h["model"]]
-    pool = matching or hosters
-    weights = [max(h["share"], 0) or 1 for h in pool]
-    picked = random.choices(pool, weights=weights, k=1)[0]
-    return (picked["endpoint"] or "").strip()
+    """Pick the first healthy pool endpoint (weighted by share). Empty pool → ""."""
+    cands = pool_candidates(model, limit=1)
+    return (cands[0]["endpoint"] or "").strip() if cands else ""
+
+
+def _pool_ping(endpoint: str) -> bool:
+    """Reachability probe for a pool host (its /api/tags)."""
+    try:
+        req = urllib.request.Request(f"{endpoint}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+        return True
+    except Exception:
+        return False
+
+
+async def pool_health_loop():
+    """Keep the pool's view of who's alive current even between AI calls, so a
+    computer that sleeps (laptop lid) or drops its link is parked quickly and
+    comes straight back the moment it's reachable again."""
+    while True:
+        await asyncio.sleep(POOL_HEALTH_INTERVAL)
+        hosters = pool_hosters()
+        for h in hosters:
+            ep = (h["endpoint"] or "").strip()
+            if not ep:
+                continue
+            ok = await asyncio.to_thread(_pool_ping, ep)
+            pool_record(ep, ok)
 
 
 def usage_bucket(window: int) -> str:
@@ -947,10 +1088,7 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
     full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profiles)
 
     async def factory():
-        return await ask_ollama(
-            cfg["endpoint"], cfg["model"], full_prompt,
-            cfg.get("temperature", 0.8), cfg.get("max_tokens", 400),
-        )
+        return await ask_ollama_any(cfg, full_prompt, cfg.get("temperature", 0.8), cfg.get("max_tokens", 400))
 
     fut = ai_queue.submit(guild_id, factory)
     async with message.channel.typing():
@@ -1035,10 +1173,7 @@ async def dm_chat(channel, question, cfg, mention="", user_id="", name=""):
     full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profile_lines("dm", who))
 
     async def factory():
-        return await ask_ollama(
-            cfg["endpoint"], cfg["model"], full_prompt,
-            cfg["temperature"], cfg["max_tokens"],
-        )
+        return await ask_ollama_any(cfg, full_prompt, cfg["temperature"], cfg["max_tokens"])
 
     fut = ai_queue.submit("dm", factory)
     try:
@@ -1160,6 +1295,8 @@ async def on_ready():
         print(f"quaestio: sync failed: {exc}")
     if not getattr(bot, "_bday_task", None) or bot._bday_task.done():
         bot._bday_task = bot.loop.create_task(birthday_loop())
+    if not getattr(bot, "_pool_health_task", None) or bot._pool_health_task.done():
+        bot._pool_health_task = bot.loop.create_task(pool_health_loop())
 
     # Localhost settings page (opt-in via CLI: quaestio localweb)
     if _local_web() and not getattr(bot, "_local_web_started", False):
@@ -1746,10 +1883,7 @@ async def ask(interaction: discord.Interaction, prompt: str):
         full_prompt = prompt[:400]
 
     async def factory():
-        return await ask_ollama(
-            cfg["endpoint"], cfg["model"], full_prompt,
-            cfg["temperature"], cfg["max_tokens"],
-        )
+        return await ask_ollama_any(cfg, full_prompt, cfg["temperature"], cfg["max_tokens"])
 
     fut = ai_queue.submit(interaction.guild.id, factory)
     try:
@@ -1836,9 +1970,7 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         prompt += "\n\nFollow these server instructions where relevant:\n" + cfg["instructions"]
 
     async def factory():
-        return await ask_ollama(
-            cfg["endpoint"], cfg["model"], prompt, cfg["temperature"], cfg["max_tokens"]
-        )
+        return await ask_ollama_any(cfg, prompt, cfg["temperature"], cfg["max_tokens"])
 
     fut = ai_queue.submit(interaction.guild.id, factory)
     try:

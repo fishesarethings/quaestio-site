@@ -22,6 +22,18 @@ import shutil
 import subprocess
 import sys
 
+try:
+    from textual.app import App as _TApp, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Horizontal, Vertical
+    from textual.screen import ModalScreen
+    from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
+except Exception:
+    _TApp = None
+    ComposeResult = Binding = None
+    Horizontal = Vertical = ModalScreen = None
+    Button = Footer = Header = Input = ListItem = ListView = Static = None
+
 HOME = os.path.expanduser("~")
 INSTALL_DIR = os.environ.get("QUAESTIO_DIR", os.path.join(HOME, "quaestio"))
 BOT_DIR = os.path.join(INSTALL_DIR, "bot")
@@ -230,6 +242,46 @@ def status():
 
 
 # ---------------------------------------------------------------------------
+# Install / add components (full-screen wizard)
+# ---------------------------------------------------------------------------
+
+def install_menu():
+    """Open the full-screen installer — it first asks WHAT you want (bot,
+    web panel, pool), then the connection + model, the token, and installs.
+    Falls back to the classic `install.sh` command when this terminal can't
+    run a full-screen TUI."""
+    import urllib.request
+    if not which("curl") and not which("python3"):
+        boom("Can't install without curl or python3 on this machine.")
+    wizard = os.path.join(BOT_DIR, "install_wizard.py")
+    if not os.path.isfile(wizard):
+        say("Downloading the installer wizard…")
+        base = os.environ.get("QUAESTIO_SRC",
+                              "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+        os.makedirs(BOT_DIR, exist_ok=True)
+        try:
+            urllib.request.urlretrieve(f"{base}/install_wizard.py", wizard)
+        except Exception:
+            boom("Couldn't fetch the wizard. Run it directly instead:\n"
+                 "  curl -fsSL https://quaestio.online/bot/install.sh | bash")
+    try:
+        import textual  # noqa: F401
+    except Exception:
+        boom("Full-screen installer needs the `textual` UI library, which isn't "
+             "installed in this Python. Run the text installer instead:\n"
+             "  curl -fsSL https://quaestio.online/bot/install.sh | bash")
+    say("Opening the installer — tick what you'd like to install, then Next…")
+    env = dict(os.environ)
+    env.setdefault("QUAESTIO_DIR", INSTALL_DIR)
+    env.setdefault("BOT_TOKEN", read_env("BOT_TOKEN") or "")
+    env.setdefault("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+    if os.path.exists(KEYFILE_LOCAL) and not os.environ.get("QUAESTIO_KEY_FILE"):
+        env["QUAESTIO_KEY_FILE"] = KEYFILE_LOCAL
+    subprocess.call([sys.executable, wizard], env=env)
+    say("Done. Pick 'Status' to check, or 'Settings' to adjust anything.", GREEN)
+
+
+# ---------------------------------------------------------------------------
 # Contribution to the resource pool
 # ---------------------------------------------------------------------------
 
@@ -293,8 +345,122 @@ def contribute():
 # Settings — .env editor with a guided menu
 # ---------------------------------------------------------------------------
 
+def _pool_db_path():
+    db_path = read_env("DB_PATH")
+    if not db_path:
+        cand = os.path.join(BOT_DIR, "quaestio.db")
+        db_path = cand if os.path.isdir(BOT_DIR) else os.path.join(os.getcwd(), "quaestio.db")
+    return db_path
+
+
+def _pool_rows():
+    """This box's pool rows, endpoint/model decrypted, for the settings TUI."""
+    import sqlite3
+    db_path = _pool_db_path()
+    if not os.path.isfile(db_path):
+        return []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, name, endpoint, model, share, enabled FROM hosters ORDER BY id").fetchall()]
+        conn.close()
+    except Exception:
+        return []
+    sys.path.insert(0, BOT_DIR)
+    try:
+        import config as q_cfg
+        dec = q_cfg.maybe_decrypt
+        enc = q_cfg.maybe_encrypt
+    except Exception:
+        dec = lambda _k, v: v
+        enc = lambda _k, v: v
+    for r in rows:
+        r["endpoint"] = (dec("pool_endpoint", r["endpoint"]) or "").strip()
+        r["model"] = (dec("pool_model", r["model"]) or "").strip()
+    return rows
+
+
+def _pool_apply(endpoint, model, share):
+    """Create/update this box's pool node (the settings TUI's resources tab).
+    share 0 enables the row and keeps it; set None to leave share unchanged."""
+    import sqlite3
+    import secrets
+    db_path = _pool_db_path()
+    conn = sqlite3.connect(db_path)
+    my_id = None
+    local_ep = (read_env("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip().rstrip("/")
+    try:
+        rows = conn.execute("SELECT id, endpoint FROM hosters WHERE enabled=1").fetchall()
+        for r in rows:
+            if r[1] and r[1].startswith("enc:"):
+                ep = (config_dec_pool(r[1]) or "").rstrip("/")
+            else:
+                ep = (r[1] or "").rstrip("/")
+            if ep == local_ep:
+                my_id = r[0]
+                break
+        if my_id is None:
+            rows = conn.execute("SELECT id, added_by FROM hosters WHERE added_by IN ('cli','installer') ORDER BY id DESC LIMIT 1").fetchall()
+            if rows:
+                my_id = rows[0][0]
+        if my_id is None:
+            rows = conn.execute("SELECT id FROM hosters ORDER BY id DESC LIMIT 1").fetchall()
+            if rows:
+                my_id = rows[0][0]
+    except Exception:
+        pass
+
+    sys.path.insert(0, BOT_DIR)
+    try:
+        import config as q_cfg
+        enc_ep = q_cfg.maybe_encrypt("pool_endpoint", endpoint)
+        enc_m = q_cfg.maybe_encrypt("pool_model", model)
+    except Exception:
+        enc_ep, enc_m = endpoint, model
+
+    if my_id is not None:
+        conn.execute("UPDATE hosters SET endpoint=?, model=?, share=?, enabled=1 WHERE id=?",
+                     (enc_ep, enc_m, max(0, min(100, int(share or 50))), my_id))
+    else:
+        conn.execute(
+            "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) "
+            "VALUES (?, ?, ?, ?, 1, 'cli', ?)",
+            (_anon_name(), enc_ep, enc_m, max(0, min(100, int(share or 50))),
+             datetime.datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def config_dec_pool(v):
+    """Best-effort decrypt of a pool endpoint/model for display."""
+    try:
+        import config as q_cfg
+        return q_cfg.maybe_decrypt("pool_endpoint", v)
+    except Exception:
+        return v
+
+
+def write_env_value(key, value):
+    """Set/clear a .env value directly (used by the settings TUI). 'CLEAR' wipes it."""
+    env_file = os.path.join(BOT_DIR, ".env")
+    val = (value or "").strip()
+    if val.upper() == "CLEAR":
+        val = ""
+    lines = []
+    if os.path.isfile(env_file):
+        with open(env_file) as f:
+            lines = f.readlines()
+    out = [ln for ln in lines if not ln.startswith(key + "=")]
+    if val:
+        out.append(f"{key}={val}\n")
+    with open(env_file, "w") as f:
+        f.writelines(out)
+    os.chmod(env_file, 0o600)
+
+
 ENV_QUESTIONS = [
-    ("BOT_TOKEN", "Discord bot token (Developer Portal → app → Bot)", None, True),
+    ("BOT_TOKEN", "Discord bot token (optional, add later)", None, True),
     ("OLLAMA_BASE_URL", "Where Ollama lives (e.g. http://127.0.0.1:11434)", "http://127.0.0.1:11434", False),
     ("OLLAMA_MODEL", "Default model to use", "qwen2.5:1.5b", False),
     ("OLLAMA_TIMEOUT", "AI timeout in seconds", "180", False),
@@ -345,34 +511,21 @@ def settings():
     if not os.path.isfile(env_file):
         say("No .env yet — creating one from the example.")
         shutil.copy(os.path.join(BOT_DIR, ".env.example"), env_file)
-    say("Change Quaestio settings. Leave a field blank to keep it, type CLEAR to reset.\n")
-    tui_settings_done = False
     if _tui():
         try:
-            import questionary
-            while True:
-                cur = {k: read_env(k) for k, _, _, _ in ENV_QUESTIONS}
-                choices = [
-                    questionary.Choice(
-                        title=f"{label}{DIM}  —  currently: {('(hidden)' if secret and cur[k] else (cur[k] or '(not set)'))}{RESET}",
-                        value=("edit", k))
-                    for k, label, _d, secret in ENV_QUESTIONS
-                ]
-                choices.append(questionary.Choice(title="✓ Done — save and restart", value=("done", None)))
-                pick = _pick("Pick a setting to change", choices)
-                if not pick or pick[0] == "done":
-                    break
-                key = pick[1]
-                label = next(l for k, l, _d, _s in ENV_QUESTIONS if k == key)
-                default = next(d for k, _l, d, _s in ENV_QUESTIONS if k == key)
-                secret = next(s for k, _l, _d, s in ENV_QUESTIONS if k == key)
-                edit_env(key, label, default, secret)
-            tui_settings_done = True
-        except Exception:
-            tui_settings_done = False
-    if not tui_settings_done:
-        for key, label, default, secret in ENV_QUESTIONS:
-            edit_env(key, label, default, secret)
+            if settings_tui():
+                if which("ollama"):
+                    m = read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"
+                    if input(f"\nPull the AI model '{m}' now if missing? [y/N] ").strip().lower() in ("y", "yes"):
+                        subprocess.run(["ollama", "pull", m])
+                if input("\nRestart the bot to apply changes? [Y/n] ").strip().lower() in ("", "y", "yes"):
+                    restart()
+                return
+        except Exception as exc:
+            say(f"Settings TUI fell back to the text flow ({exc}).", DIM)
+    say("Change Quaestio settings. Leave a field blank to keep it, type CLEAR to reset.\n")
+    for key, label, default, secret in ENV_QUESTIONS:
+        edit_env(key, label, default, secret)
     say("\nSettings saved to " + env_file + " (permissions 600).")
     if which("ollama"):
         m = read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"
@@ -383,6 +536,196 @@ def settings():
 
 
 # ---------------------------------------------------------------------------
+# Settings as a real full-screen TUI (Textual) — neatly laid out, no overlap.
+# Sections: Bot, AI engine, Community pool (the resources you lend the pool).
+# ---------------------------------------------------------------------------
+
+SETTINGS_ROWS = [
+    # (section, key, label, secret, kind)
+    ("Bot", "BOT_TOKEN", "Discord bot token (optional)", True, "env"),
+    ("Bot", "PREFIX", "Command prefix", False, "env"),
+    ("Bot", "WARN_LIMIT", "Warn limit before kick", False, "env"),
+    ("AI engine", "OLLAMA_BASE_URL", "Ollama endpoint", False, "env"),
+    ("AI engine", "OLLAMA_MODEL", "Default model", False, "env"),
+    ("AI engine", "OLLAMA_TIMEOUT", "AI timeout (seconds)", False, "env"),
+    ("Community pool", "POOL_SHARE", "Share you lend the pool (%)", False, "pool"),
+    ("Community pool", "POOL_ENDPOINT", "Endpoint you share", False, "pool"),
+    ("Community pool", "POOL_MODEL", "Model you share", False, "pool"),
+]
+
+
+def _settings_pool_row():
+    rows = _pool_rows()
+    return rows[0] if rows else None
+
+
+def _settings_current(kind, key):
+    if kind == "pool":
+        r = _settings_pool_row()
+        if r is None:
+            return "not contributing"
+        if key == "POOL_SHARE":
+            return f"{r['share']}%"
+        if key == "POOL_ENDPOINT":
+            return r["endpoint"] or "(not set)"
+        return r["model"] or "(not set)"
+    v = read_env(key) or ""
+    if key == "BOT_TOKEN":
+        if v:
+            return "(hidden — is set)"
+        return "(not set — optional)"
+    return v or "(not set)"
+
+
+if _TApp is not None and ModalScreen is not None:
+    class SettingsEdit(ModalScreen):
+        def __init__(self, label, initial, secret):
+            super().__init__()
+            self._label = label
+            self._initial = initial
+            self._secret = secret
+    
+        def compose(self) -> ComposeResult:
+            with Vertical(classes="modal"):
+                yield Static(f"[b]  {self._label}[/b]", classes="mtitle")
+                yield Input(
+                    value=self._initial,
+                    password=self._secret,
+                    placeholder="Leave as-is · type CLEAR to empty",
+                    id="sval",
+                )
+                yield Static("  ⏎ enter: save   ·   esc: cancel", classes="mhelp")
+                with Horizontal(id="mnav"):
+                    yield Button("Cancel", variant="default", id="mcancel")
+                    yield Button("Save", variant="primary", id="msave")
+    
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "msave":
+                self.dismiss(self.query_one("#sval", Input).value)
+            else:
+                self.dismiss(None)
+    
+    
+class SettingsApp(_TApp):
+        TITLE = "Quaestio — settings"
+        CSS = """
+        Screen { background: #0d1117; }
+        #body { padding: 0 3; }
+        #list { border: round #30363d; height: 1fr; }
+        #list:focus-within { border: round #58a6ff; }
+        ListView { height: 1fr; }
+        ListItem { height: 3; padding: 0 1; }
+        ListItem.--highlight { background: #1f6feb; }
+        #bottom { height: 4; align-horizontal: right; }
+        #bottom Button { margin: 0 1; }
+        .modal { width: 60; height: auto; background: #161b22; border: round #58a6ff; padding: 1 2; }
+        #mnav { height: auto; align-horizontal: right; }
+        #mnav Button { margin: 0 1; }
+        """
+        BINDINGS = [
+            Binding("q", "quit", "Quit", priority=True),
+            Binding("escape", "quit", "Quit", priority=True),
+            Binding("up,k", "cursor_up", "Up", show=False),
+            Binding("down,j", "cursor_down", "Down", show=False),
+        ]
+    
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            with Vertical(id="body"):
+                yield Static("[b]Settings[/b] — pick a row, ⏎ to edit. Everything stays on this machine.",
+                             classes="pvhint")
+                yield ListView(id="list")
+                yield Static("  ↑↓/j/k move · ⏎ edit · [b]q[/b]/esc quit · [b]Restart & done[/b] to apply", id="keys")
+                with Horizontal(id="bottom"):
+                    yield Button("Pull AI model", id="pull")
+                    yield Button("Restart & done", variant="success", id="done")
+            yield Footer()
+    
+        def _build_items(self):
+            from textual.widgets import ListItem, ListView, Static
+            lv = self.query_one("#list", ListView)
+            lv.remove_children(list(lv.children))
+            first_pool = True
+            for section, key, label, secret, kind in SETTINGS_ROWS:
+                if kind == "pool" and first_pool:
+                    first_pool = False
+                    r = _settings_pool_row()
+                    share = r["share"] if r else 0
+                    lv.append(ListItem(
+                        Static(f"[b]● Community pool[/b]  [dim]lending {share}% of your box to other servers[/dim]",
+                               classes="sechead"),
+                        id="poolhdr"))
+                lv.append(ListItem(
+                    Static(f"[b]{label}[/b]" + ("  [dim](secret)[/dim]" if secret else ""), classes="slbl"),
+                    Static(f"[dim]    {_settings_current(kind, key)}[/dim]", classes="sval", id="v_" + key),
+                    id="row_" + key,
+                ))
+    
+        def on_mount(self) -> None:
+            self._build_items()
+            self.query_one("#list", ListView).focus()
+    
+        def on_list_view_selected(self, ev) -> None:
+            row_id = getattr(ev.item, "id", "") or ""
+            if not row_id.startswith("row_"):
+                return
+            key = row_id[len("row_"):]
+            kind = next(_kk for _k, rk, _l, _s, _kk in SETTINGS_ROWS if rk == key)
+            secret = next(s for _k, rk, _l, s, _kk in SETTINGS_ROWS if rk == key)
+            if kind == "pool":
+                r = _settings_pool_row()
+                if r is None:
+                    init = "http://127.0.0.1:11434" if key == "POOL_ENDPOINT" else ("qwen2.5:1.5b" if key == "POOL_MODEL" else "50")
+                elif key == "POOL_SHARE":
+                    init = str(r["share"])
+                elif key == "POOL_ENDPOINT":
+                    init = r["endpoint"] or ""
+                else:
+                    init = r["model"] or ""
+            else:
+                init = read_env(key) or ""
+            label = next(l for _k, rk, l, _s, _kk in SETTINGS_ROWS if rk == key)
+            self.push_screen(SettingsEdit(label, init, secret),
+                             callback=lambda result: self._apply_row(key, kind, result))
+    
+        def _apply_row(self, key, kind, result) -> None:
+            if result is None:
+                return
+            if kind == "env":
+                write_env_value(key, result)
+            else:
+                r = _settings_pool_row()
+                endpoint = result if key == "POOL_ENDPOINT" else (
+                    r["endpoint"] if r else (read_env("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"))
+                model = result if key == "POOL_MODEL" else (
+                    r["model"] if r else (read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"))
+                share = int(result) if key == "POOL_SHARE" else (r["share"] if r else 50)
+                _pool_apply(endpoint or "http://127.0.0.1:11434", model or "qwen2.5:1.5b", share)
+            self.query_one("#v_" + key, Static).update(f"[dim]    {_settings_current(kind, key)}[/dim]")
+            if kind == "pool":
+                r = _settings_pool_row()
+                share = r["share"] if r else 0
+                self.query_one("#poolhdr").query_one(Static).update(
+                    f"[b]● Community pool[/b]  [dim]lending {share}% of your box to other servers[/dim]")
+            self.query_one("#list", ListView).focus()
+    
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "pull":
+                event.button.label = "Pulling…"
+                subprocess.run(["ollama", "pull", read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"],
+                               check=False)
+                event.button.label = "Pull AI model"
+            elif event.button.id == "done":
+                self.exit(True)
+    
+    
+def settings_tui():
+    """Open the full-screen settings form. Returns True when the user saves."""
+    if _TApp is None:
+        raise RuntimeError("Textual isn't installed — using the text flow.")
+    return SettingsApp().run()
+
+
 # Local web server for the same settings (optional, toggled from the CLI)
 # ---------------------------------------------------------------------------
 
@@ -476,6 +819,7 @@ def _pick(title, choices, default=None):
 
 def _menu_actions():
     return [
+        ("Install / Add components", install_menu, "full-screen wizard: bot + web panel + pool"),
         ("Status", status, "what's installed / running"),
         ("Start / Stop / Restart", restart, "control the bot"),
         ("Settings", settings, "change tokens, model, timeout…"),
@@ -492,7 +836,7 @@ def _status_text() -> str:
     if is_installed():
         parts.append(f"Installed at {INSTALL_DIR}")
     else:
-        parts.append("Not installed yet — run the installer first")
+        parts.append("Not installed yet — pick 'Install / Add components'")
     if is_linux_systemd() and os.path.exists(SERVICE):
         parts.append("service " + ("running" if systemd_active() else "stopped"))
     elif is_running():
@@ -593,17 +937,18 @@ def menu_plain():
     if is_installed():
         print(f"  {GREEN}● Installed{RESET}  at {INSTALL_DIR}")
     else:
-        print(f"  {YELLOW}○ Not installed yet{RESET}  (run the installer first)")
+        print(f"  {YELLOW}○ Not installed yet{RESET}  (pick 1 — Install / Add components)")
     print()
     menu_actions = [
-        ("1", "Status", status, "what's installed / running"),
-        ("2", "Start / Stop / Restart", restart, "control the bot"),
-        ("3", "Settings", settings, "change tokens, model, timeout…"),
-        ("4", "Contribute to the pool", contribute, "share part of your AI box"),
-        ("5", "Local web panel", localweb, "turn the localhost settings page on/off"),
-        ("6", "Update", update, "pull the latest bot code"),
-        ("7", "Uninstall", uninstall, "remove everything, nothing left behind"),
-        ("8", "About / help", help_text, "how everything works"),
+        ("1", "Install / Add components", install_menu, "full-screen wizard: bot + web panel + pool"),
+        ("2", "Status", status, "what's installed / running"),
+        ("3", "Start / Stop / Restart", restart, "control the bot"),
+        ("4", "Settings", settings, "change tokens, model, timeout…"),
+        ("5", "Contribute to the pool", contribute, "share part of your AI box"),
+        ("6", "Local web panel", localweb, "turn the localhost settings page on/off"),
+        ("7", "Update", update, "pull the latest bot code"),
+        ("8", "Uninstall", uninstall, "remove everything, nothing left behind"),
+        ("9", "About / help", help_text, "how everything works"),
         ("0", "Quit", None, "close this menu"),
     ]
     for num, name, _fn, desc in menu_actions:

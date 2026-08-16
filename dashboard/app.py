@@ -101,6 +101,7 @@ def db_init():
             added_by TEXT, at TEXT
         );"""
     )
+    _migrate_pool_health(conn)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
     if "user_id" not in cols:
         conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT DEFAULT ''")
@@ -112,6 +113,17 @@ def db_init():
     conn.commit()
     _migrate_pool_anonymize(conn)
     conn.close()
+
+
+def _migrate_pool_health(conn):
+    """Pool-host health tracking (shared schema with the bot)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(hosters)").fetchall()}
+    for col, ddl in (("failed", "ALTER TABLE hosters ADD COLUMN failed INTEGER DEFAULT 0"),
+                     ("down_until", "ALTER TABLE hosters ADD COLUMN down_until TEXT DEFAULT ''"),
+                     ("last_ok", "ALTER TABLE hosters ADD COLUMN last_ok TEXT DEFAULT ''"),
+                     ("last_fail", "ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''")):
+        if col not in cols:
+            conn.execute(ddl)
 
 
 def _migrate_pool_anonymize(conn):

@@ -200,12 +200,15 @@ class Token(Screen):
         with Vertical(id="body"):
             yield Static("  [b]Your Discord bot token[/b]", classes="title")
             yield Static(
-                "  Discord Developer Portal → your app → Bot → Reset Token, then paste it.\n"
-                "  It's stored locally in bot/.env with 600 permissions — never shown to anyone.\n"
-                "  Blank? You can add it later with [b]quaestio settings[/b].", classes="sub")
-            yield Input(placeholder="Paste token (hidden)", password=True, id="token")
+                "  Optional — Quaestio works without it until you're ready.\n"
+                "  If you have one: Developer Portal → your app → Bot → Reset Token, then paste.\n"
+                "  It's stored locally in bot/.env with 600 permissions and never leaves your machine.\n"
+                "  Skip if you'd rather add it later with [b]quaestio settings[/b].", classes="sub")
+            yield Input(placeholder="Paste token (hidden, optional)", password=True, id="token")
             yield Static("", classes="spacer")
+            yield Static("  [dim]Skip if you don't have a token yet — you can add one anytime.[/dim]", classes="hint")
             with Horizontal(id="nav"):
+                yield Button("Skip for now", variant="default", id="skip")
                 yield Button("Back", variant="default", id="back")
                 yield Button("Next →", variant="primary", id="next")
         yield Footer()
@@ -214,7 +217,7 @@ class Token(Screen):
         cfg.token = self.query_one("#token", Input).value.strip()
         if event.button.id == "back":
             self.app.switch_screen("connections")
-        elif event.button.id == "next":
+        elif event.button.id in ("skip", "next"):
             if cfg.pool:
                 self.app.switch_screen("pool")
             else:
@@ -305,6 +308,8 @@ class Run(Screen):
             log.write("[bold green]Done! Everything is in place.[/bold green]")
             if cfg.token:
                 log.write(f"Start the bot (macOS):  {os.path.join(INSTALL_DIR, 'run-quaestio.sh')}")
+            else:
+                log.write("[b]No bot token yet[/b] — Quaestio starts without one. Add it anytime with:  quaestio settings")
             log.write(f"Manage it anytime:  quaestio   (menu)   ·   quaestio help")
         self.query_one("#finish", Button).disabled = False
 
@@ -563,7 +568,7 @@ def _plan_text():
         f"  AI connection:     {endpoint}",
         "  Admin web panel:   " + ("yes (fetched to ~/quaestio/dashboard)" if cfg.web else "no"),
         "  Community pool:    " + (f"yes — {cfg.pool_share}% anonymously" if cfg.pool else "no"),
-        "  Bot token:         " + ("provided (saved to bot/.env)" if cfg.token else "not set — add later with `quaestio settings`"),
+        "  Bot token:         " + ("provided (saved to bot/.env)" if cfg.token else "skipped — add later with `quaestio settings`"),
         "",
         "  Press Install now to do everything.",
     ]
@@ -587,6 +592,7 @@ class Installer(App):
     .title { margin: 1 0 0 0; color: #58a6ff; text-style: bold; }
     .sub { margin: 0 0 1 0; color: #8b949e; }
     .lbl { margin: 1 0 0 0; color: #8b949e; }
+    .hint { margin: 0 0 1 0; color: #6e7681; }
     .spacer { height: 3; }
     .plan { color: #c9d1d9; padding: 1 2; border: round #30363d; }
     #nav { height: 5; align-horizontal: right; }
