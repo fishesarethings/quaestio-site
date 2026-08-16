@@ -128,6 +128,8 @@ class Components(Screen):
         ("escape", "app.pop_screen", "Back"),
         ("up,k", "focus_prev", "Up"),
         ("down,j", "focus_next", "Down"),
+        ("left,h", "nav_back", "Back button"),
+        ("right,l", "nav_forward", "Next button"),
     ]
 
     def action_focus_next(self):
@@ -135,6 +137,12 @@ class Components(Screen):
 
     def action_focus_prev(self):
         self.focus_previous("Checkbox, #nav Button")
+
+    def action_nav_back(self):
+        self.query_one("#nav #back", Button).focus()
+
+    def action_nav_forward(self):
+        self.query_one("#nav #next", Button).focus()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
