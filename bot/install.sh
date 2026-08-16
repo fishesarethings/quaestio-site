@@ -8,12 +8,12 @@
 #   1. Checks for Python 3.10+ / pip — auto-installs on macOS (brew) or tells
 #      you the one command on Ubuntu/Debian/RHEL-family if missing.
 #   2. Creates a virtualenv (venv) so nothing touches your system Python.
-#   3. Installs dependencies (just discord.py) from requirements.txt.
-#   4. Detects Ollama: prompts to install it if missing (this machine only),
-#      and offers to pull a small smart model (qwen2.5:1.5b, ~1 GB) so AI works
-#      immediately with zero manual steps.
-#   5. Prompts once for your Discord bot token, writes .env (chmod 600).
-#   6. Installs a systemd service (Linux) OR prints a run command (macOS).
+#   3. Installs dependencies from requirements.txt.
+#   4. Opens a full-screen interactive wizard (if run from a terminal): walks
+#      you through what gets installed, the AI/web/pool components, the
+#      connection + model, pool share, and your bot token — then installs
+#      everything with live progress.
+#   5. Falls back to the classic text prompts when non-interactive.
 #
 # Re-running is safe — it only installs missing pieces.
 # -----------------------------------------------------------------------------
@@ -100,6 +100,7 @@ if [[ ! -f "$BOT_DIR/bot.py" ]]; then
   curl -fsSL "$BASE/bot.py" -o "$BOT_DIR/bot.py" || die "Could not download bot.py (check your network)."
   curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
   curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
+  curl -fsSL "$BASE/install_wizard.py" -o "$BOT_DIR/install_wizard.py" || warn "Could not download the install wizard."
   curl -fsSL "$BASE/requirements.txt" -o "$BOT_DIR/requirements.txt"
   curl -fsSL "$BASE/.env.example" -o "$BOT_DIR/.env.example" || true
 else
@@ -115,6 +116,11 @@ else
     BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
     curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
   fi
+  if [[ ! -f "$BOT_DIR/install_wizard.py" ]]; then
+    say "Fetching the install wizard…"
+    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+    curl -fsSL "$BASE/install_wizard.py" -o "$BOT_DIR/install_wizard.py" || warn "Could not download the install wizard."
+  fi
 fi
 chmod +x "$BOT_DIR/quaestio.py" 2>/dev/null || true
 
@@ -126,6 +132,40 @@ fi
 say "Installing dependencies…"
 "$VENV/bin/pip" --quiet install --upgrade pip
 "$VENV/bin/pip" --quiet install -r "$BOT_DIR/requirements.txt"
+
+# --- 3aa. Interactive install wizard (skip when non-interactive / no textual) ---
+# The wizard opens a full-screen TUI: what gets installed, AI engine + web panel +
+# pool choices, the connection + model, pool share, the bot token, then installs
+# everything with live progress. Falls back to the classic Q&A flow below.
+INSTALL_WIZARD="$BOT_DIR/install_wizard.py"
+WIZARD_OK=0
+if [[ -f "$INSTALL_WIZARD" ]] && [[ -t 0 ]] && [[ -z "${QUAESTIO_NO_WIZARD:-}" ]]; then
+  if "$VENV/bin/python" -c "import textual" >/dev/null 2>&1; then
+    say "Opening the interactive installer (full-screen TUI)…"
+    say "Use ↑/↓ or Tab to move, Enter/Space to pick, Esc to go back."
+    echo
+    BOT_TOKEN="${BOT_TOKEN:-}" \
+    OLLAMA_BASE_URL="${REMOTE_OLLAMA:-}" \
+    QUAESTIO_MODEL="$MODEL" \
+    QUAESTIO_DIR="$INSTALL_DIR" \
+    QUAESTIO_KEY_FILE="${QUAESTIO_KEY_FILE:-}" \
+    QUAESTIO_SRC="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}" \
+      "$VENV/bin/python" "$INSTALL_WIZARD" && WIZARD_OK=1
+  fi
+fi
+if [[ "$WIZARD_OK" == "1" ]]; then
+  say "Installer wizard finished. You're all set!"
+  say ""
+  say "Manage it anytime from any folder:"
+  say "    quaestio                opens a full-screen interactive TUI"
+  say "    quaestio help           shows every command"
+  say "    quaestio status         what's here / running"
+  say "    quaestio settings       change any setting"
+  say "    quaestio contribute     join the resource pool"
+  say "    quaestio update         pull the latest bot"
+  say "    quaestio uninstall      remove everything"
+  exit 0
+fi
 
 # --- 3b. A real `quaestio` command on your PATH ------------------------------
 # After install you can just type `quaestio` (menu), `quaestio help`,
@@ -197,15 +237,20 @@ fi
 # --- 5. Token / .env -----------------------------------------------------------
 ENV_FILE="$BOT_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]] || ! grep -q '[^#]' "$ENV_FILE" 2>/dev/null || grep -qi 'your-bot-token-here' "$ENV_FILE"; then
-  echo
-  warn "Discord bot token needed (Developer Portal → your app → Bot → Reset Token)."
-  if [[ -t 0 ]]; then
-    read -r -p "Paste your bot token (hidden): " -s token
-    echo
+  if [[ -n "${BOT_TOKEN:-}" ]]; then
+    token="$BOT_TOKEN"
+    say "Using BOT_TOKEN from the environment."
   else
-    die "Non-interactive run — set BOT_TOKEN=... and re-run, or write $ENV_FILE yourself."
+    echo
+    warn "Discord bot token needed (Developer Portal → your app → Bot → Reset Token)."
+    if [[ -t 0 ]]; then
+      read -r -p "Paste your bot token (hidden): " -s token
+      echo
+    else
+      die "Non-interactive run — set BOT_TOKEN=... and re-run, or write $ENV_FILE yourself."
+    fi
+    [[ -z "$token" ]] && die "No token given."
   fi
-  [[ -z "$token" ]] && die "No token given."
   printf 'BOT_TOKEN=%s\n' "$token" > "$ENV_FILE"
   if [[ -n "$REMOTE_OLLAMA" ]]; then
     printf 'OLLAMA_BASE_URL=%s\n' "$REMOTE_OLLAMA" >> "$ENV_FILE"

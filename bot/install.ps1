@@ -35,6 +35,7 @@ if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
     Invoke-WebRequest -Uri "$base/bot.py" -OutFile (Join-Path $BotDir "bot.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/quaestio.py" -OutFile (Join-Path $BotDir "quaestio.py") -UseBasicParsing
+    Invoke-WebRequest -Uri "$base/install_wizard.py" -OutFile (Join-Path $BotDir "install_wizard.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/requirements.txt" -OutFile (Join-Path $BotDir "requirements.txt") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/.env.example" -OutFile (Join-Path $BotDir ".env.example") -UseBasicParsing
 } else {
@@ -49,6 +50,11 @@ if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
         Say "Fetching the manage tool (quaestio.py)…"
         Invoke-WebRequest -Uri "$base/quaestio.py" -OutFile (Join-Path $BotDir "quaestio.py") -UseBasicParsing
     }
+    if (-not (Test-Path (Join-Path $BotDir "install_wizard.py"))) {
+        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        Say "Fetching the install wizard…"
+        Invoke-WebRequest -Uri "$base/install_wizard.py" -OutFile (Join-Path $BotDir "install_wizard.py") -UseBasicParsing
+    }
 }
 
 # --- 3. Virtualenv + deps ----------------------------------------------------
@@ -59,6 +65,38 @@ if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {
 Say "Installing dependencies…"
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet --upgrade pip
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet -r (Join-Path $BotDir "requirements.txt")
+
+# --- 3aa. Interactive install wizard (full-screen TUI) ------------------------
+# Walks you through what gets installed, AI/web/pool choices, connection + model,
+# pool share and your token, then installs everything with live progress.
+# Falls back to the classic text prompts below (non-interactive consoles).
+$Wizard = Join-Path $BotDir "install_wizard.py"
+$WizardOK = $false
+if ((Test-Path $Wizard) -and (-not $env:QUAESTIO_NO_WIZARD) -and (-not $RemoteOllama)) {
+    $hasTextual = & (Join-Path $Venv "Scripts\python.exe") -c "import textual" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Say "Opening the interactive installer (full-screen TUI)…"
+        Say "Use ↑/↓ or Tab to move, Enter/Space to pick, Esc to go back."
+        $env:BOT_TOKEN = if ($env:BOT_TOKEN) { $env:BOT_TOKEN } else { "" }
+        $env:QUAESTIO_DIR = $InstallDir
+        $env:QUAESTIO_SRC = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        $env:OLLAMA_BASE_URL = $RemoteOllama
+        & (Join-Path $Venv "Scripts\python.exe") $Wizard
+        if ($LASTEXITCODE -eq 0) { $WizardOK = $true }
+    }
+}
+if ($WizardOK) {
+    Say "Installer wizard finished. You're all set!"
+    Say "Manage it anytime from any folder:"
+    Say "    quaestio            opens a full-screen interactive TUI"
+    Say "    quaestio help       shows every command"
+    Say "    quaestio status     what's here / running"
+    Say "    quaestio settings   change any setting"
+    Say "    quaestio contribute join the resource pool"
+    Say "    quaestio update     pull the latest bot"
+    Say "    quaestio uninstall  remove everything"
+    exit 0
+}
 
 # --- 3b. A real `quaestio` command on your PATH ------------------------------
 # After install you can just type `quaestio`, `quaestio help`, `quaestio status`,
@@ -110,9 +148,14 @@ if (Test-Path $EnvFile) {
     if ($content -match "your-bot-token-here") { $writeEnv = $true } else { $writeEnv = $false }
 }
 if ($writeEnv) {
-    Warn "Discord bot token needed (Developer Portal → your app → Bot → Reset Token)."
-    $token = Read-Host "Paste your bot token"
-    if (-not $token) { Die "No token given." }
+    if ($env:BOT_TOKEN) {
+        $token = $env:BOT_TOKEN
+        Say "Using BOT_TOKEN from the environment."
+    } else {
+        Warn "Discord bot token needed (Developer Portal → your app → Bot → Reset Token)."
+        $token = Read-Host "Paste your bot token"
+        if (-not $token) { Die "No token given." }
+    }
     $envLines = @("BOT_TOKEN=$token")
     if ($RemoteOllama) { $envLines += "OLLAMA_BASE_URL=$RemoteOllama" } else { $envLines += "OLLAMA_BASE_URL=http://127.0.0.1:11434" }
     $envLines += "OLLAMA_MODEL=$Model"
