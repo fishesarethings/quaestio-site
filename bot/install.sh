@@ -19,7 +19,7 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-INSTALL_DIR="${QUAESTIO_DIR:-$HOME/quaestio}"
+INSTALL_DIR="${QUAESTIO_DIR:-$HOME/Downloads/quaestio}"
 MODEL="${QUAESTIO_MODEL:-qwen2.5:1.5b}"
 # Pre-set this to host the AI on another computer, e.g.:
 #   OLLAMA_BASE_URL=http://192.168.1.50:11434 curl -fsSL https://quaestio.online/bot/install.sh | bash

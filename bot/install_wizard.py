@@ -283,6 +283,7 @@ class Connections(_NavScreen):
         yield Header(show_clock=True)
         with Vertical(id="body"):
             yield Static("  [b]Where does the AI run?[/b]", classes="title")
+            yield Static(f"  [dim]Everything installs into: {cfg.install_dir} — change it on the folder step.[/dim]", classes="hint")
             mode = NavSelect(
                 [("This machine (recommended)", "local"), ("Another computer on your network", "remote")],
                 value=("remote" if cfg.remote_endpoint else "local"), id="mode", prompt="Pick the AI connection",
@@ -319,23 +320,58 @@ class Location(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
-            yield Static("  [b]Where should everything go?[/b]", classes="title")
+            yield Static("  [b]Portable install — where should everything go?[/b]", classes="title")
             yield Static(
-                "  Everything — bot code, dashboard and the Python environment — lands in\n"
-                "  one portable folder. Default is your Downloads folder; pick anywhere.\n"
-                "  Move or delete that folder to move or remove the whole install.",
+                "  Bot code, dashboard and the Python environment all live in one\n"
+                "  portable folder — default is your Downloads folder. Type a path\n"
+                "  below or press [b]Browse…[/b] to pick one (shows a native folder\n"
+                "  selector on macOS; Linux uses zenity/kdialog if installed).",
                 classes="sub")
             yield Static("Install folder:", classes="lbl")
             yield Input(value=cfg.install_dir, id="dir", placeholder="~/Downloads/quaestio")
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
+                yield Button("Browse…", id="browse")
                 yield Button("Back", variant="default", id="back")
                 yield Button("Next →", variant="primary", id="next")
         yield Footer()
 
+    async def _browse(self):
+        import asyncio
+        path = None
+        if sys.platform == "darwin" and which("osascript"):
+            p = await asyncio.create_subprocess_exec(
+                "osascript", "-e",
+                'POSIX path of (choose folder with prompt "Choose the Quaestio install folder")',
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out = (await p.communicate())[0].decode().strip()
+            if out:
+                path = out
+        elif which("zenity"):
+            p = await asyncio.create_subprocess_exec(
+                "zenity", "--file-selection", "--directory",
+                "--title=Choose the Quaestio install folder",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out = (await p.communicate())[0].decode().strip()
+            if out:
+                path = out
+        elif which("kdialog"):
+            p = await asyncio.create_subprocess_exec(
+                "kdialog", "--getexistingdirectory", "~",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out = (await p.communicate())[0].decode().strip()
+            if out:
+                path = out
+        if path:
+            self.query_one("#dir", Input).value = path.rstrip("/")
+        else:
+            self.notify("No folder picker here — just type the full path above.", severity="warning")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back":
             self.app.switch_screen("components")
+        elif event.button.id == "browse":
+            self.app.run_worker(self._browse())
         elif event.button.id == "next":
             _set_dirs(self.query_one("#dir", Input).value.strip() or cfg.install_dir)
             self.app.switch_screen("connections")
