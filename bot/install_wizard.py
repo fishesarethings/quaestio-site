@@ -51,7 +51,7 @@ if not os.environ.get("QUAESTIO_NO_WIZARD"):
     try:
         from textual.app import App, ComposeResult
         from textual.containers import Horizontal, Vertical, VerticalScroll
-        from textual.screen import Screen
+        from textual.screen import ModalScreen, Screen
         from textual.widgets import Button, Checkbox, Footer, Header, Input, RichLog, Select, Static
     except Exception:
         print("[quaestio] Textual isn't installed in this environment — can't open the install wizard.")
@@ -124,7 +124,17 @@ class Start(Screen):
 
 
 class Components(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Back"),
+        ("up,k", "focus_prev", "Up"),
+        ("down,j", "focus_next", "Down"),
+    ]
+
+    def action_focus_next(self):
+        self.focus_next("Checkbox, #nav Button")
+
+    def action_focus_prev(self):
+        self.focus_previous("Checkbox, #nav Button")
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -150,7 +160,41 @@ class Components(Screen):
         if event.button.id == "back":
             self.app.switch_screen("start")
         elif event.button.id == "next":
+            if not cfg.pool:
+                self.app.push_screen(AskPool(), callback=self._after_pool_ask)
+            else:
+                self.app.switch_screen("connections")
+
+    def _after_pool_ask(self, result) -> None:
+        if result == "yes":
+            cfg.pool = True
             self.app.switch_screen("connections")
+        elif result == "no":
+            self.app.switch_screen("connections")
+
+
+class AskPool(ModalScreen):
+    BINDINGS = [("escape", "dismiss_no", "No")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal"):
+            yield Static("[b]Community pool[/b]", classes="mtitle")
+            yield Static(
+                "You left 'Contribute to the community pool' un-ticked.\n\n"
+                "The pool loans part of your AI box to other Quaestio servers\n"
+                "(and borrows from them when yours is busy) — anonymous + encrypted.\n"
+                "You can join or leave it anytime from `quaestio contribute`.\n"
+                "\nWant to lend part of your box?", classes="mbody")
+            with Horizontal(id="mnav"):
+                yield Button("Yes, I'll contribute", id="yes")
+                yield Button("No, skip it", variant="primary", id="no")
+        yield Footer()
+
+    def action_dismiss_no(self) -> None:
+        self.dismiss("no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss("yes" if event.button.id == "yes" else "no")
 
 
 class Connections(Screen):
@@ -597,6 +641,13 @@ class Installer(App):
     .plan { color: #c9d1d9; padding: 1 2; border: round #30363d; }
     #nav { height: 5; align-horizontal: right; }
     #nav Button { margin: 0 1; }
+    ModalScreen { background: #000000 60%; }
+    .modal { background: #161b22; border: round #58a6ff; width: 72;
+             height: auto; padding: 1 2; margin: 4 8; }
+    .mtitle { color: #58a6ff; text-style: bold; }
+    .mbody { color: #c9d1d9; margin: 1 0; }
+    #mnav { height: 5; align-horizontal: right; }
+    #mnav Button { margin: 0 1; }
     Icon { color: #58a6ff; }
     """
     BINDINGS = [
