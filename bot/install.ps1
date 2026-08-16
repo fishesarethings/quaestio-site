@@ -60,7 +60,25 @@ Say "Installing dependencies…"
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet --upgrade pip
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet -r (Join-Path $BotDir "requirements.txt")
 
-# --- 3b. Encryption keyfile --------------------------------------------------
+# --- 3b. A real `quaestio` command on your PATH ------------------------------
+# After install you can just type `quaestio`, `quaestio help`, `quaestio status`,
+# `quaestio contribute`, … from any folder or new terminal.
+$BinDir = Join-Path $InstallDir "bin"
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$quaestioCmd = Join-Path $BinDir "quaestio.cmd"
+@"
+@echo off
+"$Venv\Scripts\python.exe" "$BotDir\quaestio.py" %*
+"@ | Set-Content -Path $quaestioCmd -Encoding ASCII
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$BinDir*") {
+    [Environment]::SetEnvironmentVariable("Path", "$BinDir;$userPath", "User")
+    $env:Path = "$BinDir;$env:Path"
+    Say "Added $BinDir to your user PATH (works in new terminals)."
+}
+Say "`"quaestio`" is now a command — try `quaestio` or `quaestio help` in a new terminal."
+
+# --- 3c. Encryption keyfile --------------------------------------------------
 $KeyFile = if ($env:QUAESTIO_KEY_FILE) { $env:QUAESTIO_KEY_FILE } else { Join-Path $env:USERPROFILE ".quaestio\keyfile" }
 if (-not (Test-Path $KeyFile)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $KeyFile) | Out-Null
@@ -129,6 +147,11 @@ if (-not $task) {
 Say "Done!"
 Say "Start Quaestio with:  $runBat"
 Say "(On a server PC you can leave it running; one chat at a time keeps it light.)"
-Say "Manage it anytime (settings, update, uninstall, pool contribution):"
-Say "    python (Join-Path $BotDir 'quaestio.py')"
-Say "…or type 'help' inside the manager for one-liners like status / update / uninstall."
+Say "Manage it anytime from any folder:"
+Say "    quaestio            opens the friendly menu"
+Say "    quaestio help       shows every command"
+Say "    quaestio status     what's here / running"
+Say "    quaestio settings   change any setting"
+Say "    quaestio contribute join the resource pool"
+Say "    quaestio update     pull the latest bot"
+Say "    quaestio uninstall  remove everything"

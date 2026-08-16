@@ -118,8 +118,45 @@ say "Installing dependencies…"
 "$VENV/bin/pip" --quiet install --upgrade pip
 "$VENV/bin/pip" --quiet install -r "$BOT_DIR/requirements.txt"
 
-# --- 3b. Encryption keyfile ----------------------------------------------------
+# --- 3b. A real `quaestio` command on your PATH ------------------------------
+# After install you can just type `quaestio` (menu), `quaestio help`,
+# `quaestio status`, `quaestio contribute`, … from any folder.
+install_quaestio_command() {
+  BIN_DIR="$INSTALL_DIR/bin"
+  mkdir -p "$BIN_DIR"
+  cat > "$BIN_DIR/quaestio" <<EOF
+#!/usr/bin/env bash
+# Quaestio manager — `quaestio` opens the menu, `quaestio help` lists actions.
+INSTALL_DIR="$INSTALL_DIR"
+VENV="$VENV"
+exec "$VENV/bin/python" "$INSTALL_DIR/bot/quaestio.py" "\$@"
+EOF
+  chmod +x "$BIN_DIR/quaestio"
+
+  # Symlink it into the first bin dir that's on PATH (or the usual ones).
+  local target=""
+  for d in "$HOME/.local/bin" "$HOME/bin"; do
+    if printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$d"; then
+      target="$d"; break
+    fi
+  done
+  if [[ -z "$target" ]]; then
+    mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+    target="$HOME/.local/bin"
+  fi
+  ln -sf "$BIN_DIR/quaestio" "$target/quaestio"
+  say "\"quaestio\" is now a command ($target/quaestio)."
+  if ! printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$target"; then
+    warn "Add it to your PATH (or open a new terminal) for \`quaestio\` to work:"
+    say "    export PATH=\"$target:\$PATH\""
+  fi
+}
+
+# --- 3c. Encryption keyfile ----------------------------------------------------
 keyfile
+
+# --- 3d. `quaestio` command on your PATH ---------------------------------------
+install_quaestio_command
 
 # --- 4. Ollama (AI) ------------------------------------------------------------
 if ! command -v ollama >/dev/null 2>&1; then
@@ -218,7 +255,11 @@ fi
 
 say "Everything ready. Your AI brain: local Ollama ($MODEL). Nothing is cloud-hosted."
 say ""
-say "Manage it anytime (settings, update, uninstall, pool contribution):"
-say "    python3 \"$BOT_DIR/quaestio.py\""
-say "Or start fresh:"
-say "    python3 \"$BOT_DIR/quaestio.py\" help"
+say "Manage it anytime from any folder:"
+say "    quaestio                opens the friendly menu"
+say "    quaestio help           shows every command"
+say "    quaestio status         what's here / running"
+say "    quaestio settings       change any setting"
+say "    quaestio contribute     join the resource pool"
+say "    quaestio update         pull the latest bot"
+say "    quaestio uninstall      remove everything"

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Quaestio command-line manager.
 
-One command opens a friendly menu that walks you through everything:
+After install, `quaestio` is a command on your PATH — just type it:
 
-  python3 quaestio.py          -> interactive menu
-  python3 quaestio.py help     -> the same guide, as text
-  python3 quaestio.py <action> -> run one action directly
+  quaestio               -> interactive menu
+  quaestio help          -> the same guide, as text
+  quaestio <action>      -> run one action directly
 
 Actions: status, start, stop, restart, update, uninstall, contribute,
 settings, localweb, about.
@@ -185,6 +185,17 @@ def uninstall():
     if os.path.isdir(INSTALL_DIR):
         shutil.rmtree(INSTALL_DIR, ignore_errors=True)
         wiped.append(INSTALL_DIR)
+    # Remove the `quaestio` PATH command if it points at this install.
+    for d in (os.path.join(HOME, ".local", "bin"), os.path.join(HOME, "bin"), "/usr/local/bin"):
+        link = os.path.join(d, "quaestio")
+        try:
+            if os.path.islink(link) or os.path.isfile(link):
+                if os.path.realpath(link) == os.path.realpath(os.path.join(INSTALL_DIR, "bin", "quaestio")) \
+                        or os.path.realpath(link) == os.path.realpath(os.path.join(BOT_DIR, "quaestio.py")):
+                    os.remove(link)
+                    wiped.append(link)
+        except Exception:
+            pass
     say("Removed: " + ", ".join(wiped), GREEN)
     say("Done — Quaestio is fully gone. If you want the AI gone too: "
         "`ollama rm qwen2.5:1.5b`, and uninstall Ollama itself anytime.")
@@ -360,7 +371,7 @@ def localweb():
         "the same settings the CLI does.", GREEN)
     if input("Restart the bot so it serves the panel? [Y/n] ").strip().lower() in ("", "y", "yes"):
         restart()
-    say("Disable anytime by re-running `quaestio.py localweb` and choosing N, "
+    say("Disable anytime by re-running `quaestio localweb` and choosing N, "
         "or deleting LOCAL_WEB=1 from bot/.env.")
 
 
@@ -379,13 +390,16 @@ folder — nothing is cloud-hosted unless you choose to share.
     curl -fsSL https://quaestio.online/bot/install.sh | bash
 
   {BOLD}Manage (this tool):{RESET}
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')}          interactive menu
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')} help     this help as text
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')} status   what's here / running
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')} settings change any setting
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')} contribute join the resource pool
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')} update   pull the latest bot
-    python3 {os.path.join(BOT_DIR, 'quaestio.py')} uninstall remove everything
+    quaestio                        interactive menu
+    quaestio help                   this help as text
+    quaestio status                 what's here / running
+    quaestio settings               change any setting
+    quaestio contribute             join the resource pool
+    quaestio update                 pull the latest bot
+    quaestio uninstall              remove everything
+
+  (Before the installer has put `quaestio` on your PATH, run it directly:
+   python3 {os.path.join(BOT_DIR, 'quaestio.py')})
 
   {BOLD}Resources:{RESET}
     Web:  https://quaestio.online
@@ -400,11 +414,12 @@ folder — nothing is cloud-hosted unless you choose to share.
 def help_text():
     print(ABOUT)
     print(f"  {BOLD}One-liners you can type directly:{RESET}")
-    print(f"    python3 {os.path.join(BOT_DIR, 'quaestio.py')} status")
-    print(f"    python3 {os.path.join(BOT_DIR, 'quaestio.py')} settings")
-    print(f"    python3 {os.path.join(BOT_DIR, 'quaestio.py')} contribute")
-    print(f"    python3 {os.path.join(BOT_DIR, 'quaestio.py')} update")
-    print(f"    python3 {os.path.join(BOT_DIR, 'quaestio.py')} uninstall")
+    print("    quaestio status")
+    print("    quaestio settings")
+    print("    quaestio contribute")
+    print("    quaestio update")
+    print("    quaestio uninstall")
+    print(f"  (no `quaestio` command yet? Run: python3 {os.path.join(BOT_DIR, 'quaestio.py')})")
 
 
 def menu():
@@ -463,7 +478,7 @@ def main():
         return
     fn = globals().get(args.action)
     if fn is None or not callable(fn):
-        boom(f"Unknown action '{args.action}'. Type `python3 quaestio.py help`.")
+        boom(f"Unknown action '{args.action}'. Type `quaestio help` (or `{os.path.join(BOT_DIR, 'quaestio.py')} help` before install).")
     fn()
 
 

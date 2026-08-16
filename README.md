@@ -89,6 +89,23 @@ The installer checks/installs Python, creates an isolated virtualenv, installs
 once for your bot token, and sets up a service (systemd on Linux, startup task
 on Windows). The AI runs on your machine — nothing goes to the cloud.
 
+### Manage it with the `quaestio` command
+The installer also adds a `quaestio` command to your PATH. Type it from any
+folder:
+
+```
+quaestio               opens the friendly menu
+quaestio help          lists every command
+quaestio status        what's here / running
+quaestio settings      change any setting
+quaestio contribute    join the anonymous resource pool
+quaestio update        pull the latest bot
+quaestio uninstall     remove everything (including the command itself)
+```
+
+`uninstall` stops the bot, removes the service/keyfile/install folder, and
+takes the `quaestio` command off your PATH.
+
 ### Hosting the AI on a different computer
 Quaestio and the model don't have to share a machine. Run Ollama on any spare
 PC (Windows, Linux, macOS), then either:
