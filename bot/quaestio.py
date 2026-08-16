@@ -127,6 +127,10 @@ def is_running():
         return False
 
 
+def _mac_agent_path():
+    return os.path.expanduser("~/Library/LaunchAgents/com.quaestio.host.plist")
+
+
 def start():
     if systemd_active():
         say("Already running as a service.", GREEN)
@@ -138,10 +142,15 @@ def start():
         subprocess.run(["sudo", "systemctl", "start", "quaestio.service"])
         say("Started (systemd). Status: systemctl status quaestio", GREEN)
         return
+    if sys.platform == "darwin" and os.path.exists(_mac_agent_path()):
+        subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", _mac_agent_path()], capture_output=True)
+        subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/com.quaestio.host"], capture_output=True)
+        say("Started (login agent). Runs on every boot.", GREEN)
+        return
     run_sh = os.path.join(INSTALL_DIR, "run-quaestio.sh")
     if os.path.exists(run_sh):
-        say("For a background service, use the installer's systemd option "
-            "(Linux). A quick foreground run:")
+        say("For a background service, use the installer's autostart option "
+            "(Linux systemd / macOS login agent). A quick foreground run:")
         say(f"  {run_sh}", GREEN)
     else:
         p = venv_python()
@@ -153,6 +162,11 @@ def stop():
     if is_linux_systemd() and os.path.exists(SERVICE):
         subprocess.run(["sudo", "systemctl", "stop", "quaestio.service"])
         say("Stopped (systemd).", GREEN)
+        return
+    if sys.platform == "darwin" and os.path.exists(_mac_agent_path()):
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", _mac_agent_path()], capture_output=True)
+        subprocess.run(["pkill", "-f", r"python[0-9.]* .*bot\.py"], capture_output=True)
+        say("Stopped (login agent). It will not start again until you run `start`.", GREEN)
         return
     try:
         subprocess.run(["pkill", "-f", r"python[0-9.]* .*bot\.py"])

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 
-INSTALL_DIR = os.environ.get("QUAESTIO_INSTALL_DIR") or os.environ.get("QUAESTIO_DIR") or os.path.expanduser("~/quaestio")
+INSTALL_DIR = os.environ.get("QUAESTIO_INSTALL_DIR") or os.environ.get("QUAESTIO_DIR") or os.path.expanduser("~/Downloads/quaestio")
 BOT_DIR = os.path.join(INSTALL_DIR, "bot")
 DASH_DIR = os.path.join(INSTALL_DIR, "dashboard")
 VENV = os.path.join(INSTALL_DIR, ".venv")
@@ -72,8 +72,9 @@ class Cfg:
         self.ai = True            # install + run the local AI engine
         self.web = False          # fetch the admin web panel
         self.pool = False         # contribute to the community pool
+        self.autostart = True     # keep serving after reboot / login
         self.endpoint_mode = "local"
-        self.remote_endpoint = os.environ.get("OLLAMA_BASE_URL", "")
+        self.remote_endpoint = ""
         self.model = MODEL_DEFAULT
         self.pool_share = 50
         self.token = os.environ.get("BOT_TOKEN", "")
@@ -82,6 +83,23 @@ class Cfg:
 
 
 cfg = Cfg()
+
+
+def _set_dirs(base: str):
+    """Point the whole install at a chosen folder (portable install). Everything
+    — bot code, dashboard, venv — lives under this one folder, so moving or
+    deleting the folder moves or removes the entire install."""
+    global INSTALL_DIR, BOT_DIR, DASH_DIR, VENV, PY, PIP
+    base = os.path.abspath(os.path.expanduser(base or cfg.install_dir))
+    INSTALL_DIR = base
+    BOT_DIR = os.path.join(base, "bot")
+    DASH_DIR = os.path.join(base, "dashboard")
+    VENV = os.path.join(base, ".venv")
+    PY = os.path.join(VENV, "bin", "python")
+    PIP = os.path.join(VENV, "bin", "pip")
+    cfg.install_dir = base
+    cfg.bot_dir = BOT_DIR
+    cfg.venv = VENV
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +218,11 @@ class Components(_NavScreen):
             ai = Checkbox("AI engine — Ollama + a local model (~1 GB). Required to host in the pool.", value=cfg.ai, id="ai")
             web = Checkbox("Admin web panel — a browser UI for settings. Optional.", value=cfg.web, id="web")
             pool = Checkbox("Join the community pool — Quaestio routes AI requests to your box randomly. Anonymous + encrypted.", value=cfg.pool, id="pool")
+            autostart = Checkbox("Start on login / after reboot — keeps your box serving the pool.", value=cfg.autostart, id="autostart")
             yield ai
             yield web
             yield pool
+            yield autostart
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
                 yield Button("Back", variant="default", id="back")
@@ -213,20 +233,19 @@ class Components(_NavScreen):
         cfg.ai = self.query_one("#ai", Checkbox).value
         cfg.web = self.query_one("#web", Checkbox).value
         cfg.pool = self.query_one("#pool", Checkbox).value
+        cfg.autostart = self.query_one("#autostart", Checkbox).value
         if event.button.id == "back":
             self.app.switch_screen("start")
         elif event.button.id == "next":
             if not cfg.pool:
                 self.app.push_screen(AskPool(), callback=self._after_pool_ask)
             else:
-                self.app.switch_screen("connections")
+                self.app.switch_screen("location")
 
     def _after_pool_ask(self, result) -> None:
         if result == "yes":
             cfg.pool = True
-            self.app.switch_screen("connections")
-        elif result == "no":
-            self.app.switch_screen("connections")
+        self.app.switch_screen("location")
 
 
 class AskPool(ModalScreen):
@@ -291,40 +310,35 @@ class Connections(_NavScreen):
         cfg.remote_endpoint = self.query_one("#remote", Input).value.strip()
         cfg.model = self.query_one("#model", Select).value or cfg.model
         if event.button.id == "back":
-            self.app.switch_screen("components")
+            self.app.switch_screen("location")
         elif event.button.id == "next":
-            self.app.switch_screen("token")
+            self.app.switch_screen("pool" if cfg.pool else "review")
 
 
-class Token(_NavScreen):
+class Location(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
-            yield Static("  [b]Do you run your own bot? (almost nobody needs this)[/b]", classes="title")
+            yield Static("  [b]Where should everything go?[/b]", classes="title")
             yield Static(
-                "  You normally don't need anything here — Quaestio's shared bot\n"
-                "  handles your servers. This step is only for advanced self-hosting,\n"
-                "  when you run the Quaestio bot yourself instead of using the shared one.\n"
-                "  Leave it blank for the community-host + web-panel setup.\n"
-                "  You can always add a token later with [b]quaestio settings[/b].", classes="sub")
-            yield Input(placeholder="Only advanced: your own bot's token (hidden, optional)", password=True, id="token")
+                "  Everything — bot code, dashboard and the Python environment — lands in\n"
+                "  one portable folder. Default is your Downloads folder; pick anywhere.\n"
+                "  Move or delete that folder to move or remove the whole install.",
+                classes="sub")
+            yield Static("Install folder:", classes="lbl")
+            yield Input(value=cfg.install_dir, id="dir", placeholder="~/Downloads/quaestio")
             yield Static("", classes="spacer")
-            yield Static("  [dim]Leave it empty — the shared Quaestio bot is enough.[/dim]", classes="hint")
             with Horizontal(id="nav"):
-                yield Button("Skip for now", variant="default", id="skip")
                 yield Button("Back", variant="default", id="back")
                 yield Button("Next →", variant="primary", id="next")
         yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        cfg.token = self.query_one("#token", Input).value.strip()
         if event.button.id == "back":
+            self.app.switch_screen("components")
+        elif event.button.id == "next":
+            _set_dirs(self.query_one("#dir", Input).value.strip() or cfg.install_dir)
             self.app.switch_screen("connections")
-        elif event.button.id in ("skip", "next"):
-            if cfg.pool:
-                self.app.switch_screen("pool")
-            else:
-                self.app.switch_screen("review")
 
 
 class Pool(_NavScreen):
@@ -347,7 +361,7 @@ class Pool(_NavScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         cfg.pool_share = int(self.query_one("#share", Select).value or 50)
         if event.button.id == "back":
-            self.app.switch_screen("token")
+            self.app.switch_screen("connections")
         elif event.button.id == "next":
             self.app.switch_screen("review")
 
@@ -366,7 +380,7 @@ class Review(_NavScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back":
-            self.app.switch_screen(("pool" if cfg.pool else "token"))
+            self.app.switch_screen("pool" if cfg.pool else "connections")
         elif event.button.id == "install":
             self.app.switch_screen("run")
 
@@ -403,15 +417,16 @@ class Run(_NavScreen):
         else:
             log.write("")
             log.write("[bold green]Done! Everything is in place.[/bold green]")
-            if cfg.token:
-                log.write(f"Start the bot (macOS):  {os.path.join(INSTALL_DIR, 'run-quaestio.sh')}")
+            if cfg.pool:
+                log.write("Your box is registered with the community pool — press Done.")
             else:
-                log.write("[b]No bot token yet[/b] — Quaestio starts without one. Add it anytime with:  quaestio settings")
+                log.write("[b]No token needed[/b] — Quaestio's shared bot handles servers. Add your own later:  quaestio settings")
             log.write(f"Manage it anytime:  quaestio   (menu)   ·   quaestio help")
         self.query_one("#finish", Button).disabled = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.app.pop_screen()
+        if event.button.id == "finish":
+            self.app.exit("done")
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +543,7 @@ def _step_ollama_install():
         raise RuntimeError("Install Ollama from https://ollama.com/download (macOS), then re-run the installer.")
     if os.getuid() != 0 and not which("sudo"):
         raise RuntimeError("The Ollama install script needs sudo — re-run the installer with sudo.")
-    subprocess.run("curl -fsSL https://ollama.com/install.sh | sh", shell=True, check=True)
+    _run(["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"], silent=True)
     return "Ollama installed"
 
 
@@ -538,15 +553,26 @@ def _step_pull_model():
     r = subprocess.run(["ollama", "list"], capture_output=True, text=True)
     if cfg.model in r.stdout:
         return f"model {cfg.model} already present"
-    subprocess.run(["ollama", "pull", cfg.model], check=False)
-    return f"model {cfg.model} pulled"
+    subprocess.run(["ollama", "pull", cfg.model], capture_output=True, text=True)
+    return f"model {cfg.model} pulled (this can take a few minutes)"
 
 
 def _step_service():
-    if is_linux_systemd():
-        envf = os.path.join(cfg.bot_dir, ".env")
-        unit = f"""[Unit]
-Description=Quaestio Discord bot
+    run_script = os.path.join(INSTALL_DIR, "run-quaestio.sh")
+    with open(run_script, "w") as f:
+        f.write(f"""#!/usr/bin/env bash
+cd "{cfg.bot_dir}"
+set -a; source .env; set +a
+exec "{PY}" "{os.path.join(cfg.bot_dir, 'bot.py')}"
+""")
+    os.chmod(run_script, 0o755)
+    if not cfg.autostart:
+        return f"run script ready (autostart off): {run_script}"
+    if not is_linux_systemd():
+        return f"run script ready: {run_script}"
+    envf = os.path.join(cfg.bot_dir, ".env")
+    unit = f"""[Unit]
+Description=Quaestio community host
 After=network-online.target ollama.service
 Wants=network-online.target
 
@@ -561,23 +587,72 @@ User={os.environ.get('USER', 'root')}
 [Install]
 WantedBy=multi-user.target
 """
-        with open("/tmp/qfsvc", "w") as f:
-            f.write(unit)
-        os.system(
-            f"sudo cp /tmp/qfsvc {SERVICE} && "
-            f"sudo systemctl daemon-reload && "
-            f"sudo systemctl enable --now quaestio.service >/dev/null 2>&1"
-        )
-        return "systemd service installed & started"
-    run_script = os.path.join(INSTALL_DIR, "run-quaestio.sh")
-    with open(run_script, "w") as f:
-        f.write(f"""#!/usr/bin/env bash
-cd "{cfg.bot_dir}"
-set -a; source .env; set +a
-exec "{PY}" "{os.path.join(cfg.bot_dir, 'bot.py')}"
-""")
-    os.chmod(run_script, 0o755)
-    return f"run script ready: {run_script}"
+    with open("/tmp/qfsvc", "w") as f:
+        f.write(unit)
+    _run(["sudo", "cp", "/tmp/qfsvc", SERVICE], silent=True)
+    _run(["sudo", "systemctl", "daemon-reload"], silent=True)
+    _run(["sudo", "systemctl", "enable", "--now", "quaestio.service"], silent=True)
+    return "systemd service installed & started"
+
+
+def _step_autostart():
+    """Persist on reboot: systemd on Linux (done by the service step), a
+    LaunchAgent on macOS that keeps Ollama serving the pool (and the bot, if a
+    token is set). Toggling off removes it cleanly — never breaks boot."""
+    if not cfg.autostart:
+        if sys.platform == "darwin":
+            plist = os.path.expanduser("~/Library/LaunchAgents/com.quaestio.host.plist")
+            if os.path.exists(plist):
+                subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", plist],
+                               capture_output=True)
+                try:
+                    os.remove(plist)
+                except OSError:
+                    pass
+                return "autostart removed (login item uninstalled)"
+        return "autostart skipped"
+    if is_linux_systemd():
+        return "autostart handled by the systemd service"
+    if sys.platform != "darwin":
+        return "autostart not available on this OS (Linux uses systemd)"
+    plist_dir = os.path.expanduser("~/Library/LaunchAgents")
+    os.makedirs(plist_dir, exist_ok=True)
+    os.makedirs(INSTALL_DIR, exist_ok=True)
+    run_host = os.path.join(INSTALL_DIR, "run-host.sh")
+    with open(run_host, "w") as f:
+        f.write(f'''#!/usr/bin/env bash
+# Quaestio community host — kept running at login.
+INSTALL_DIR="{INSTALL_DIR}"
+BOT_DIR="{BOT_DIR}"
+PY="{PY}"
+[[ -d "$INSTALL_DIR" ]] || exit 0
+cd "$BOT_DIR"
+set -a; [[ -f .env ]] && source .env; set +a
+if grep -q "^POOL_NODE_SECRET=" .env 2>/dev/null; then
+  command -v ollama >/dev/null 2>&1 || exit 0
+  pgrep -x ollama >/dev/null 2>&1 || nohup ollama serve >/dev/null 2>&1 &
+fi
+if [[ -n "${{BOT_TOKEN:-}}" ]]; then
+  exec "$PY" "$BOT_DIR/bot.py"
+fi
+''')
+    os.chmod(run_host, 0o755)
+    plist = os.path.join(plist_dir, "com.quaestio.host.plist")
+    with open(plist, "w") as f:
+        f.write(f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.quaestio.host</string>
+  <key>ProgramArguments</key><array><string>{run_host}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>{os.path.join(INSTALL_DIR, 'host.log')}</string>
+  <key>StandardErrorPath</key><string>{os.path.join(INSTALL_DIR, 'host.err.log')}</string>
+</dict></plist>
+''')
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", plist], capture_output=True)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", plist], capture_output=True)
+    return f"autostart on login installed ({plist})"
 
 
 def _step_command():
@@ -655,12 +730,11 @@ def _step_web():
     if not cfg.web:
         return "skipped (web panel not requested)"
     base = os.environ.get("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/dashboard")
-    os.makedirs(DASH_DIR, exist_ok=True)
+    os.makedirs(os.path.join(DASH_DIR, "static"), exist_ok=True)
     for f in ("app.py", "requirements.txt"):
-        subprocess.run(["curl", "-fsSL", f"{base}/{f}", "-o", os.path.join(DASH_DIR, f)], check=False)
-    subprocess.run(["curl", "-fsSL", f"{base}/static/app.js", "-o", os.path.join(DASH_DIR, "static", "app.js")], check=False)
-    subprocess.run(["curl", "-fsSL", f"{base}/static/style.css", "-o", os.path.join(DASH_DIR, "static", "style.css")], check=False)
-    subprocess.run(["curl", "-fsSL", f"{base}/static/index.html", "-o", os.path.join(DASH_DIR, "static", "index.html")], check=False)
+        _run(["curl", "-fsSL", f"{base}/{f}", "-o", os.path.join(DASH_DIR, f)], silent=True)
+    for f in ("app.js", "style.css", "index.html"):
+        _run(["curl", "-fsSL", f"{base}/static/{f}", "-o", os.path.join(DASH_DIR, "static", f)], silent=True)
     return "web panel fetched (run it per README → Admin web panel)"
 
 
@@ -676,6 +750,7 @@ def _install_steps():
         ("Ollama engine", _step_ollama_install),
         ("AI model", _step_pull_model),
         ("Run script / service", _step_service),
+        ("Start on login", _step_autostart),
         ("quaestio command", _step_command),
         ("Community pool", _step_pool),
         ("Web admin panel", _step_web),
@@ -688,9 +763,10 @@ def _plan_text():
         "  Install location:  " + cfg.install_dir,
         f"  AI engine:         {'Ollama + ' + cfg.model if cfg.ai else 'not installed (AI commands offline)'}",
         f"  AI connection:     {endpoint}",
-        "  Admin web panel:   " + ("yes (fetched to ~/quaestio/dashboard)" if cfg.web else "no"),
+        "  Admin web panel:   " + ("yes (fetched to the install folder)" if cfg.web else "no"),
         "  Community pool:    " + (f"yes — {cfg.pool_share}% of your box, anonymous" if cfg.pool else "no — compute stays local only"),
-        "  Bot token:         " + ("own bot (saved to bot/.env — advanced)" if cfg.token else "none — using Quaestio's shared bot"),
+        "  Start on login:    " + ("yes — keeps serving after reboot" if cfg.autostart else "no — start it manually"),
+        "  Bot:               none needed — Quaestio's shared bot (add your own later: quaestio settings)",
         "",
         "  Press Install now to do everything.",
     ]
@@ -702,8 +778,8 @@ class Installer(App):
     SCREENS = {
         "start": Start,
         "components": Components,
+        "location": Location,
         "connections": Connections,
-        "token": Token,
         "pool": Pool,
         "review": Review,
         "run": Run,
@@ -753,9 +829,17 @@ def main():
     except Exception:
         app = None
     if app:
-        app.run()
-    else:
-        print("[quaestio] Starting install in classic text mode...")
+        result = app.run()
+        if result == "done":
+            print()
+            if cfg.pool:
+                print("[quaestio] Thanks for joining the community pool!")
+                print("[quaestio] See your contributions anytime with:  quaestio pool")
+            else:
+                print("[quaestio] Thanks! Everything is in place.")
+            print("[quaestio] Manage it anytime from any folder:  quaestio   (or:  quaestio help)")
+        return
+    print("[quaestio] Starting install in classic text mode...")
 
 
 if __name__ == "__main__":
