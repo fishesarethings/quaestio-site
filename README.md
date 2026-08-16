@@ -149,7 +149,8 @@ powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/ins
 
 That downloads Python + the bot, creates `%USERPROFILE%\.quaestio\keyfile`
 for encrypted storage, pulls a small model into Ollama, and registers a startup
-task (`run-quaestio.bat` in the install folder to start it manually). It does
+task (`run-quaestio.bat` in the install folder to start it manually). It also
+puts a `quaestio` command on your PATH. It does
 **not** install the web panel by default — the dashboard is optional.
 
 To also run the **admin web panel** on Windows:

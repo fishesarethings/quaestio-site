@@ -875,9 +875,9 @@ function renderWelcomePreview() {
 
 /* ---------- host view ---------- */
 const OS_CMDS = {
-  macos: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once. Manage with ~/quaestio/bot/quaestio.py" },
-  linux: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Installs a systemd service that auto-starts on boot. Status: systemctl status quaestio · manage with ~/quaestio/bot/quaestio.py" },
-  windows: { cmd: 'powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"', note: "Installs to %USERPROFILE%\\quaestio · asks for your bot token once. Manage with quaestio.py" },
+  macos: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once. Then `quaestio` opens the manager menu from any folder." },
+  linux: { cmd: "curl -fsSL https://quaestio.online/bot/install.sh | bash", note: "Installs a systemd service that auto-starts on boot. Status: systemctl status quaestio · manage with: quaestio help / status / settings / contribute" },
+  windows: { cmd: 'powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/install.ps1 | iex"', note: "Installs to %USERPROFILE%\\quaestio · asks for your bot token once. Manage with: quaestio help / status / settings / contribute" },
 };
 
 function applyHostModeUI(mode) {

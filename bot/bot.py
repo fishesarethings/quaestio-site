@@ -1161,7 +1161,7 @@ async def on_ready():
     if not getattr(bot, "_bday_task", None) or bot._bday_task.done():
         bot._bday_task = bot.loop.create_task(birthday_loop())
 
-    # Localhost settings page (opt-in via CLI: quaestio.py localweb)
+    # Localhost settings page (opt-in via CLI: quaestio localweb)
     if _local_web() and not getattr(bot, "_local_web_started", False):
         bot._local_web_started = True
         import threading
@@ -2296,7 +2296,7 @@ def _local_web() -> bool:
 
 def _serve_local_web():
     """Tiny settings page bound to 127.0.0.1 only — the same settings the CLI
-    edits, but in a browser. Toggled on/off from the CLI (quaestio.py localweb).
+    edits, but in a browser. Toggled on/off from the CLI (quaestio localweb).
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import urllib.parse
@@ -2350,7 +2350,7 @@ def _serve_local_web():
               {"<p class='msg'>Saved.</p>" if msg else ""}
               {rows}
               <button>Save</button>
-              <span class="hint">Token is not shown here for safety — edit it with the CLI (quaestio.py settings).</span>
+              <span class="hint">Token is not shown here for safety — edit it with the CLI (quaestio settings).</span>
             </form>"""
 
         def do_GET(self):
