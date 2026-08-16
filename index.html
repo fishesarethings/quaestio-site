@@ -45,18 +45,18 @@
 
   <section class="hero">
     <div class="hero-copy">
-      <div class="badge"><span class="dot"></span> Free &middot; Self-hosted &middot; No paywall</div>
+      <div class="badge"><span class="dot"></span> Free &middot; Shared bot &middot; No paywall &middot; No tokens</div>
       <h1>Your server&rsquo;s own<br><span class="grad">AI companion</span></h1>
-      <p class="lead">Quaestio is a tiny on-prem brain plus the essentials your community actually wants — AI chat you keep going without <b>@</b>-ing every time, personalities and characters to pick from, memories, XP levels, birthdays, moderation, tags and welcome messages. It runs on your hardware, and never asks for a subscription.</p>
+      <p class="lead">Quaestio is a tiny AI brain plus the essentials your community actually wants — AI chat you keep going without <b>@</b>-ing every time, personalities and characters to pick from, memories, XP levels, birthdays, moderation, tags and welcome messages. Add the shared bot in one click, set it up in your web panel, and never create an app or paste a token.</p>
       <div class="cta">
         <a class="btn btn-primary btn-lg" href="https://discord.com/oauth2/authorize?client_id=1537428372802506802&permissions=1101994781766&scope=bot">
           Add to Discord
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </a>
-        <a class="btn btn-ghost btn-lg" href="#install">Self-host it</a>
+        <a class="btn btn-ghost btn-lg" href="#install">How it works</a>
       </div>
       <ul class="hero-check">
-        <li><span class="ok">✓</span> Private by design — chats never leave your machine</li>
+        <li><span class="ok">✓</span> Private by design — AI runs on community hardware, encrypted end-to-end</li>
         <li><span class="ok">✓</span> Keep chatting after the first @; it leaves after idle or &ldquo;go away&rdquo;</li>
         <li><span class="ok">✓</span> Personalities, birthdays, leaderboard &amp; a real memory</li>
       </ul>
@@ -230,45 +230,45 @@
   <section class="section" id="install">
     <div class="section-head reveal">
       <h2>Up and running in <span class="grad">about a minute.</span></h2>
-      <p>No subscriptions. No dashboard sign-ups. Just an invite.</p>
+      <p>No installs, no tokens, no subscriptions. Invite Quaestio and configure it in your web panel.</p>
     </div>
     <div class="steps">
       <div class="step reveal">
         <div class="step-num">1</div>
-        <h3>Invite Quaestio</h3>
-        <p>Click <strong>Add to Discord</strong>, pick your server, and grant the permissions shown. Moderation needs kick/ban/timeout; level roles need manage roles.</p>
+        <h3>Add Quaestio to Discord</h3>
+        <p>Click <strong>Add to Discord</strong> (one click, no code), pick your server, and grant the permissions shown. Moderation needs kick/ban/timeout; level roles need manage roles. You use <em>Quaestio's</em> bot — no app to create, no token to paste.</p>
       </div>
       <div class="step reveal">
         <div class="step-num">2</div>
         <h3>Say hi</h3>
-        <p>Type <code>/about</code> to meet the bot, then <code>/ask</code> or <code>@Quaestio</code> to chat — after that you barely need to <code>@</code> it again. Levels and leaderboard start filling in as members talk.</p>
+        <p>Type <code>/about</code> to meet the bot, then <code>/ask</code> or <code>@Quaestio</code> to chat. Levels and leaderboard start filling in as members talk.</p>
       </div>
       <div class="step reveal">
         <div class="step-num">3</div>
         <h3>Make it yours</h3>
-        <p>Run <code>/panel</code> for the web dashboard: pick a personality and a character, set memory and quotas, welcome messages, birthdays, reward roles and the warn limit. Every setting lives on your server.</p>
+        <p>Run <code>/panel</code>, sign in, and configure everything in your web panel: personality, memory and quotas, welcomes, birthdays, reward roles and the warn limit. One account, every server you manage.</p>
       </div>
     </div>
 
     <div class="selfhost reveal">
       <div class="selfhost-copy">
-        <h3>Prefer to run your own?</h3>
-        <p>Quaestio self-hosts with <strong>one command</strong>. It checks your system, sets up everything, and even offers to install the small local AI model — no manual steps, no subscriptions.</p>
+        <h3>Optional: lend your box to the community pool</h3>
+        <p>Quaestio runs on shared infrastructure by default, so you never have to touch a command line. Prefer to contribute compute? With <strong>one command</strong> you can join the <strong>community hosting pool</strong> — your machine handles a share of the AI requests, routed randomly and encrypted end-to-end between participant devices. No Discord token needed.</p>
         <ul class="hero-check">
-          <li><span class="ok">✓</span> One command, auto-setup, works in minutes</li>
-          <li><span class="ok">✓</span> Your hardware, your data, your uptime</li>
-          <li><span class="ok">✓</span> Auto-restart: service keeps it alive</li>
+          <li><span class="ok">✓</span> No token — you use Quaestio's shared bot, not your own</li>
+          <li><span class="ok">✓</span> Requests fan out randomly across healthy community hosts</li>
+          <li><span class="ok">✓</span> Anonymous: only a random node ID, endpoints encrypted at rest</li>
         </ul>
       </div>
       <div class="code-block">
-<pre><code><span class="c"># copy-paste this one line (macOS or Linux):</span>
+<pre><code><span class="c"># optional — join the community pool (macOS or Linux):</span>
 $ curl -fsSL https://quaestio.online/bot/install.sh | bash
 <span class="ok">▸  checks Python + venv + deps
-▸  sets up your local AI brain (Ollama)
-▸  prompts once for your bot token
-▸  installs as a service and starts it
+▸  sets up the local AI engine (Ollama)
+▸  no Discord bot token asked — ever
+▸  registers your node in the pool (anonymous)
 ▸  puts `quaestio` on your PATH — a full-screen interactive TUI</span></code></pre>
-        <div class="code-bar"><span class="ok">●</span> rich presence active</div>
+        <div class="code-bar"><span class="ok">●</span> community hosting active</div>
       </div>
     </div>
   </section>

@@ -10,9 +10,9 @@
 #   2. Creates a virtualenv (venv) so nothing touches your system Python.
 #   3. Installs dependencies from requirements.txt.
 #   4. Opens a full-screen interactive wizard (if run from a terminal): walks
-#      you through what gets installed, the AI/web/pool components, the
-#      connection + model, pool share, and your bot token — then installs
-#      everything with live progress.
+#      you through the AI/web/pool components, the connection + model and pool
+#      share — the shared Quaestio bot needs no token from you. An own-bot
+#      token is optional (advanced self-hosting only).
 #   5. Falls back to the classic text prompts when non-interactive.
 #
 # Re-running is safe — it only installs missing pieces.
@@ -133,9 +133,9 @@ say "Installing dependencies…"
 "$VENV/bin/pip" --quiet install -r "$BOT_DIR/requirements.txt"
 
 # --- 3aa. Interactive install wizard (skip when non-interactive / no textual) ---
-# The wizard opens a full-screen TUI: what gets installed, AI engine + web panel +
-# pool choices, the connection + model, pool share, the bot token, then installs
-# everything with live progress. Falls back to the classic Q&A flow below.
+# The wizard opens a full-screen TUI: the AI engine + web panel + pool choices,
+# connection + model and pool share; it never needs a Discord bot token of yours.
+# Falls back to the classic Q&A flow below.
 INSTALL_WIZARD="$BOT_DIR/install_wizard.py"
 WIZARD_OK=0
 # A controlling terminal (/dev/tty) exists even when this script is piped in

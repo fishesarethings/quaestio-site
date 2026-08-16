@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Quaestio interactive installer — a full-screen TUI wizard.
+"""Quaestio community-host installer — a full-screen TUI wizard.
 
-Driven from install.sh when run interactively. Walks you through what gets
-installed, your component choices (AI engine, admin web panel), the connection
-(model endpoint + model), community-pool sharing, your bot token, then installs
+Driven from install.sh when run interactively. Sets up a box that joins the
+Quaestio community pool (or self-hosts the bot): AI engine choices, the model
+endpoint + model, pool share and an optional own-bot token, then installs
 everything with live progress.
 
-Everything still lands in ~/quaestio (or QUAESTIO_INSTALL_DIR) and nothing is
-cloud-hosted. Re-running the installer only fills in missing pieces.
+No Discord bot token is needed — Quaestio's shared bot handles servers; this
+box is optional community compute. Everything lands in ~/quaestio (or
+QUAESTIO_INSTALL_DIR) and endpoint + model are encrypted at rest.
 """
 
 import os
@@ -139,14 +140,17 @@ class Welcome(Static):
                 markup=False,
             )
             yield Static(
-                "  Welcome! This installer sets up YOUR OWN AI companion for Discord.\n"
-                f"  Everything will land in [b]{INSTALL_DIR}[/b] and stays on your machine.\n"
+                "  Welcome! This sets up YOUR box as a Quaestio community host.\n"
+                f"  Everything lands in [b]{INSTALL_DIR}[/b] on this machine.\n"
+                "\n  No Discord account needed. You use Quaestio's shared bot —\n"
+                "  this install only contributes AI compute to its community pool.\n"
                 "\n  What you get:\n"
-                "    1.  The Quaestio bot  (AI chat, XP, birthdays, moderation, games)\n"
-                "    2.  A local AI engine (Ollama + a small model, ~1 GB)\n"
+                "    1.  The local AI engine (Ollama + a small model, ~1 GB)\n"
+                "    2.  A node in the pool — requests route to you randomly\n"
+                "        and are encrypted end-to-end between participant devices\n"
                 "    3.  The web admin panel (optional, one command to run)\n"
-                "    4.  A 'quaestio' command for managing everything.\n"
-                "\n  No subscriptions. Nothing leaves your hardware."
+                "    4.  A 'quaestio' command for managing your host.\n"
+                "\n  No subscriptions. Nothing leaves your machine unencrypted."
             )
             yield Button("Start setup →", variant="primary", id="start")
 
@@ -191,11 +195,11 @@ class Components(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
-            yield Static("  [b]What do you want to install?[/b]", classes="title")
-            yield Static("  Tick what you'd like. The bot itself is always installed.", classes="sub")
-            ai = Checkbox("AI brain — Ollama + a local model (~1 GB). Required for AI chat.", value=cfg.ai, id="ai")
-            web = Checkbox("Admin web panel — a browser UI for settings. Optional; you run it with one command.", value=cfg.web, id="web")
-            pool = Checkbox("Contribute to the community pool — lend part of your AI box so other servers can use it. Anonymous + encrypted.", value=cfg.pool, id="pool")
+            yield Static("  [b]What should this box do?[/b]", classes="title")
+            yield Static("  Quaestio's shared bot runs centrally — this box only adds compute.", classes="sub")
+            ai = Checkbox("AI engine — Ollama + a local model (~1 GB). Required to host in the pool.", value=cfg.ai, id="ai")
+            web = Checkbox("Admin web panel — a browser UI for settings. Optional.", value=cfg.web, id="web")
+            pool = Checkbox("Join the community pool — Quaestio routes AI requests to your box randomly. Anonymous + encrypted.", value=cfg.pool, id="pool")
             yield ai
             yield web
             yield pool
@@ -296,15 +300,16 @@ class Token(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
-            yield Static("  [b]Your Discord bot token[/b]", classes="title")
+            yield Static("  [b]Do you run your own bot? (almost nobody needs this)[/b]", classes="title")
             yield Static(
-                "  Optional — Quaestio works without it until you're ready.\n"
-                "  If you have one: Developer Portal → your app → Bot → Reset Token, then paste.\n"
-                "  It's stored locally in bot/.env with 600 permissions and never leaves your machine.\n"
-                "  Skip if you'd rather add it later with [b]quaestio settings[/b].", classes="sub")
-            yield Input(placeholder="Paste token (hidden, optional)", password=True, id="token")
+                "  You normally don't need anything here — Quaestio's shared bot\n"
+                "  handles your servers. This step is only for advanced self-hosting,\n"
+                "  when you run the Quaestio bot yourself instead of using the shared one.\n"
+                "  Leave it blank for the community-host + web-panel setup.\n"
+                "  You can always add a token later with [b]quaestio settings[/b].", classes="sub")
+            yield Input(placeholder="Only advanced: your own bot's token (hidden, optional)", password=True, id="token")
             yield Static("", classes="spacer")
-            yield Static("  [dim]Skip if you don't have a token yet — you can add one anytime.[/dim]", classes="hint")
+            yield Static("  [dim]Leave it empty — the shared Quaestio bot is enough.[/dim]", classes="hint")
             with Horizontal(id="nav"):
                 yield Button("Skip for now", variant="default", id="skip")
                 yield Button("Back", variant="default", id="back")
@@ -659,8 +664,8 @@ def _plan_text():
         f"  AI engine:         {'Ollama + ' + cfg.model if cfg.ai else 'not installed (AI commands offline)'}",
         f"  AI connection:     {endpoint}",
         "  Admin web panel:   " + ("yes (fetched to ~/quaestio/dashboard)" if cfg.web else "no"),
-        "  Community pool:    " + (f"yes — {cfg.pool_share}% anonymously" if cfg.pool else "no"),
-        "  Bot token:         " + ("provided (saved to bot/.env)" if cfg.token else "skipped — add later with `quaestio settings`"),
+        "  Community pool:    " + (f"yes — {cfg.pool_share}% of your box, anonymous" if cfg.pool else "no — compute stays local only"),
+        "  Bot token:         " + ("own bot (saved to bot/.env — advanced)" if cfg.token else "none — using Quaestio's shared bot"),
         "",
         "  Press Install now to do everything.",
     ]
@@ -668,7 +673,7 @@ def _plan_text():
 
 
 class Installer(App):
-    TITLE = "Quaestio — installer"
+    TITLE = "Quaestio — community host"
     SCREENS = {
         "start": Start,
         "components": Components,

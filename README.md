@@ -1,6 +1,6 @@
 # Quaestio
 
-**Your server's own AI companion** — a free, self-hosted Discord bot with a real on-prem AI brain, XP levels, moderation, tags and welcome messages.
+**Your server's AI companion** — add the shared Quaestio bot to any Discord server in one click, then configure it in your web panel. No app creation, no tokens, no self-hosting required. Community hardware powers the AI; endpoints and prompts are encrypted end-to-end.
 
 🌐 **Live site:** https://quaestio.online · 🔒 [Privacy](https://quaestio.online/privacy.html) · 📜 [Terms](https://quaestio.online/terms.html)
 
@@ -12,7 +12,7 @@ The custom domain **quaestio.online** is live, served through Cloudflare → Git
 
 ## What is Quaestio?
 
-Quaestio is a small Discord bot that runs a tiny local AI model on the server owner's own hardware. It answers one conversation at a time, typed out like a person — with no cloud, no API bills, and no subscriptions. Ever.
+Quaestio is a Discord bot with a real AI brain, plus the essentials your community actually wants: AI chat, XP levels, moderation, tags, birthdays and welcome messages. You use **Quaestio's shared bot** — there is nothing to install and no token to create to use it. If you'd like, you can also run your own box and lend it to the **community pool**, where AI requests fan out randomly (and encrypted end-to-end) across participant devices.
 
 Alongside the AI it ships 41 slash commands:
 
@@ -72,7 +72,19 @@ Live at https://quaestio.online
 ### Invite link
 Used in the hero + CTA buttons. Permission integer `1101994781766` = kick, ban, moderate members (timeouts), manage roles, purge messages, send messages/embeds, read history, add reactions, use slash commands. If you change the portal permissions, regenerate the integer and update the 3 links in `index.html`.
 
-## Running the bot yourself (one command)
+## Using Quaestio (no install, no token)
+
+1. **Add to Discord** — one click, no app to create:
+   [discord.com/oauth2/authorize?client_id=1537428372802506802](https://discord.com/oauth2/authorize?client_id=1537428372802506802&permissions=1101994781766&scope=bot)
+2. Say hi with `/about`, chat with `/ask` or `@Quaestio`.
+3. Run `/panel`, sign in, and configure everything in the web panel.
+
+You use Quaestio's shared bot — you never create your own bot or paste a token.
+
+## Optional: run your own box (community host)
+
+Want to lend compute to the community pool (or fully self-host)? One command sets
+up Ollama + a model and registers your box as an anonymous, encrypted node.
 
 **macOS / Linux:**
 ```bash
@@ -85,11 +97,12 @@ powershell -ExecutionPolicy Bypass -Command "irm https://quaestio.online/bot/ins
 ```
 
 The installer checks/installs Python, creates an isolated virtualenv, installs
-`discord.py`, detects the local AI engine (Ollama), pulls a small model, prompts
-once for your bot token, and sets up a service (systemd on Linux, startup task
-on Windows). The AI runs on your machine — nothing goes to the cloud.
+`discord.py`, detects the local AI engine (Ollama), pulls a small model, and
+sets up a service (systemd on Linux, startup task on Windows). It never asks
+for a Discord bot token — that's only an advanced option for running your own
+separate bot.
 
-### Manage it with the `quaestio` command
+### Manage your host with the `quaestio` command
 The installer also adds a `quaestio` command to your PATH. Type it from any
 folder:
 
@@ -98,8 +111,8 @@ quaestio               opens a full-screen interactive TUI
 quaestio help          lists every command
 quaestio status        what's here / running
 quaestio settings      change any setting
-quaestio contribute    join the anonymous resource pool
-quaestio update        pull the latest bot
+quaestio contribute    join the anonymous community pool
+quaestio update        pull the latest code
 quaestio uninstall     remove everything (including the command itself)
 ```
 
