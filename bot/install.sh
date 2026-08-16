@@ -265,7 +265,7 @@ fi
 say "Everything ready. Your AI brain: local Ollama ($MODEL). Nothing is cloud-hosted."
 say ""
 say "Manage it anytime from any folder:"
-say "    quaestio                opens the friendly menu"
+say "    quaestio                opens a full-screen interactive TUI"
 say "    quaestio help           shows every command"
 say "    quaestio status         what's here / running"
 say "    quaestio settings       change any setting"

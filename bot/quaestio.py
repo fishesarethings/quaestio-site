@@ -346,26 +346,31 @@ def settings():
         say("No .env yet — creating one from the example.")
         shutil.copy(os.path.join(BOT_DIR, ".env.example"), env_file)
     say("Change Quaestio settings. Leave a field blank to keep it, type CLEAR to reset.\n")
+    tui_settings_done = False
     if _tui():
-        import questionary
-        while True:
-            cur = {k: read_env(k) for k, _, _, _ in ENV_QUESTIONS}
-            choices = [
-                questionary.Choice(
-                    title=f"{label}{DIM}  —  currently: {('(hidden)' if secret and cur[k] else (cur[k] or '(not set)'))}{RESET}",
-                    value=("edit", k))
-                for k, label, _d, secret in ENV_QUESTIONS
-            ]
-            choices.append(questionary.Choice(title="✓ Done — save and restart", value=("done", None)))
-            pick = _pick("Pick a setting to change", choices)
-            if not pick or pick[0] == "done":
-                break
-            key = pick[1]
-            label = next(l for k, l, _d, _s in ENV_QUESTIONS if k == key)
-            default = next(d for k, _l, d, _s in ENV_QUESTIONS if k == key)
-            secret = next(s for k, _l, _d, s in ENV_QUESTIONS if k == key)
-            edit_env(key, label, default, secret)
-    else:
+        try:
+            import questionary
+            while True:
+                cur = {k: read_env(k) for k, _, _, _ in ENV_QUESTIONS}
+                choices = [
+                    questionary.Choice(
+                        title=f"{label}{DIM}  —  currently: {('(hidden)' if secret and cur[k] else (cur[k] or '(not set)'))}{RESET}",
+                        value=("edit", k))
+                    for k, label, _d, secret in ENV_QUESTIONS
+                ]
+                choices.append(questionary.Choice(title="✓ Done — save and restart", value=("done", None)))
+                pick = _pick("Pick a setting to change", choices)
+                if not pick or pick[0] == "done":
+                    break
+                key = pick[1]
+                label = next(l for k, l, _d, _s in ENV_QUESTIONS if k == key)
+                default = next(d for k, _l, d, _s in ENV_QUESTIONS if k == key)
+                secret = next(s for k, _l, _d, s in ENV_QUESTIONS if k == key)
+                edit_env(key, label, default, secret)
+            tui_settings_done = True
+        except Exception:
+            tui_settings_done = False
+    if not tui_settings_done:
         for key, label, default, secret in ENV_QUESTIONS:
             edit_env(key, label, default, secret)
     say("\nSettings saved to " + env_file + " (permissions 600).")
@@ -452,7 +457,7 @@ def help_text():
 
 def _tui():
     try:
-        import questionary  # noqa: F401
+        import textual  # noqa: F401
         return True
     except Exception:
         return False
@@ -469,22 +474,8 @@ def _pick(title, choices, default=None):
     ).ask()
 
 
-def menu_tui():
-    """A proper TUI — arrow keys + enter, live status line. Needs
-    `questionary` (installed with the bot). Falls back to the numbered
-    menu when it isn't available."""
-    import questionary
-    os.system("clear" if os.name != "nt" else "cls")
-    print()
-    print(f"{BOLD}{CYAN}   ██████╗ ██╗   ██╗ █████╗ ███████╗████████╗██╗ ██████╗ {RESET}")
-    print(f"{BOLD}{CYAN}  ██╔═══██╗██║   ██║██╔══██╗██╔════╝╚══██╔══╝██║██╔═══██╗{RESET}")
-    print(f"{BOLD}{CYAN}  ██║   ██║██║   ██║███████║███████╗   ██║   ██║██║   ██║{RESET}")
-    print(f"{BOLD}{CYAN}  ██║▄▄ ██║██║   ██║██╔══██║╚════██║   ██║   ██║██║▄▄ ██║{RESET}")
-    print(f"{BOLD}{CYAN}  ╚██████╔╝╚██████╔╝██║  ██║███████║   ██║   ██║╚██████╔╝{RESET}")
-    print(f"{BOLD}{CYAN}   ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝ {RESET}")
-    print(f"{BOLD}\n      server manager{RESET}   —   arrow keys to pick, Enter to run\n")
-
-    actions = [
+def _menu_actions():
+    return [
         ("Status", status, "what's installed / running"),
         ("Start / Stop / Restart", restart, "control the bot"),
         ("Settings", settings, "change tokens, model, timeout…"),
@@ -494,25 +485,106 @@ def menu_tui():
         ("Uninstall", uninstall, "remove everything, nothing left behind"),
         ("About / help", help_text, "how everything works"),
     ]
-    while True:
-        choices = [
-            questionary.Choice(
-                title=f"{name:<22} {DIM}{desc}{RESET}", value=("run", fn))
-            for name, fn, desc in actions
+
+
+def _status_text() -> str:
+    parts = []
+    if is_installed():
+        parts.append(f"Installed at {INSTALL_DIR}")
+    else:
+        parts.append("Not installed yet — run the installer first")
+    if is_linux_systemd() and os.path.exists(SERVICE):
+        parts.append("service " + ("running" if systemd_active() else "stopped"))
+    elif is_running():
+        parts.append("process running")
+    else:
+        parts.append("process stopped")
+    model = read_env("OLLAMA_MODEL") or "?"
+    parts.append(f"model {model}")
+    return "  ·  ".join(parts)
+
+
+def menu_tui():
+    """A real full-screen TUI built on Textual — live status panel on the
+    right, arrow keys to move, Enter to run, q to quit. Falls back to the
+    numbered menu if Textual isn't installed."""
+    try:
+        from textual.app import App, ComposeResult
+        from textual.containers import Horizontal, Vertical
+        from textual.widgets import Footer, Header, ListItem, ListView, Static
+        from textual.binding import Binding
+    except Exception:
+        menu_plain()
+        return
+
+    ACTIONS = _menu_actions()
+
+    class Quaestio(App):
+        TITLE = "Quaestio — server manager"
+        CSS = """
+        Screen { background: #0d1117; }
+        #logo { height: 3; background: #161b22; color: #58a6ff; }
+        #right { width: 38; height: 1fr; padding: 0 1; }
+        #right Static { margin: 1 0; }
+        #actions { border: round #30363d; height: 1fr; }
+        #actions:focus-within { border: round #58a6ff; }
+        ListView { height: 1fr; }
+        ListItem { padding: 0 1; height: 2; }
+        ListItem > Static { width: 1fr; }
+        ListView:focus ListItem.--highlight { background: #1f6feb; color: white; }
+        #desc { color: #8b949e; height: 1; padding: 0 1; }
+        .lbl { color: #58a6ff; }
+        """
+
+        BINDINGS = [
+            Binding("q", "quit", "Quit", priority=True),
+            Binding("escape", "quit", "Quit", priority=True),
+            Binding("up,k", "cursor_up", "Up", show=False),
+            Binding("down,j", "cursor_down", "Down", show=False),
         ]
-        choices.append(questionary.Choice(title=f"{RED}Quit{RESET}", value=("quit", None)))
-        pick = _pick("What would you like to do?", choices)
-        if not pick or pick[0] == "quit":
-            print(f"\n  {CYAN}[quaestio]{RESET} Bye! 👋\n")
-            return
-        print()
-        pick[1]()
-        input(f"\n  {DIM}Press Enter to go back to the menu…{RESET} ")
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            yield Static("  ██████╗ ██╗   ██╗ █████╗ ███████╗████████╗██╗ ██████╗ "
+                         "██╗██████╗ \n  ██╔═══██╗██║   ██║██╔══██╗██╔════╝╚══██╔══╝██║██╔═══██╗"
+                         "██║██╔═══██╗\n  ██║   ██║██║   ██║███████║█████╗     ██║   ██║██║   ██║██║██║   ██║",
+                         id="logo")
+            with Horizontal():
+                with Vertical():
+                    lv = ListView()
+                    yield lv
+                    yield Static("", id="desc")
+                yield Static(f"[b]● status[/b]\n\n{_status_text()}\n\n[b]● keys[/b]\n↑ ↓  move  ·  Enter  run\nq   quit", id="right")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            lv = self.query_one(ListView)
+            for name, _fn, desc in ACTIONS:
+                lv.append(ListItem(Static(f"[b]{name}[/b]"), Static(f"[dim]  {desc}[/dim]")))
+            lv.focus()
+
+        def on_list_view_selected(self, event) -> None:
+            self.exit((event.index, None))
+
+    lv = Quaestio()
+    res = lv.run()
+    if res is None:
+        # Quit (q / Esc) — exit the whole tool.
+        print(f"\n  {CYAN}[quaestio]{RESET} Bye!")
+        return
+    try:
+        idx = int(res[0])
+    except Exception:
+        menu_plain()
+        return
+    fn = ACTIONS[idx][1]
+    print()
+    fn()
+    input(f"\n  {DIM}Press Enter to go back to the menu…{RESET} ")
+    menu()
 
 
-def menu():
-    if _tui():
-        return menu_tui()
+def menu_plain():
     os.system("clear" if os.name != "nt" else "cls")
     print(f"{BOLD}{CYAN}┌─────────────────────────────────────────────┐{RESET}")
     print(f"{BOLD}{CYAN}│  Quaestio — server manager                  │{RESET}")
@@ -550,6 +622,13 @@ def menu():
     print("Unknown choice.")
     input("\n  Press Enter to continue… ")
     return menu()
+
+
+def menu():
+    if _tui():
+        menu_tui()
+        return
+    menu_plain()
 
 
 def main():
