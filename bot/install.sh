@@ -149,6 +149,8 @@ if [[ -f "$INSTALL_WIZARD" ]] && { [[ -t 0 ]] || [[ -e /dev/tty ]]; } \
     echo
     BOT_TOKEN="${BOT_TOKEN:-}" \
     OLLAMA_BASE_URL="${REMOTE_OLLAMA:-}" \
+    POOL_BROKER_URL="${POOL_BROKER_URL:-}" \
+    POOL_JOIN_KEY="${POOL_JOIN_KEY:-}" \
     QUAESTIO_MODEL="$MODEL" \
     QUAESTIO_DIR="$INSTALL_DIR" \
     QUAESTIO_KEY_FILE="${QUAESTIO_KEY_FILE:-}" \

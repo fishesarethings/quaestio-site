@@ -603,16 +603,56 @@ exec "{PY}" "{os.path.join(cfg.bot_dir, 'quaestio.py')}" "$@"
     return "`quaestio` command ready (add ~/.local/bin to PATH)"
 
 
+def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, share: int) -> str:
+    """Register this box with the central community-pool broker so the shared
+    bot can route requests to it. The returned node secret is stored in the
+    node's own .env so it can update or leave later."""
+    import json as _json
+    import urllib.error as _urlerr
+    import urllib.request as _urlreq
+    url = broker.rstrip("/") + "/api/pool/register"
+    body = _json.dumps({"endpoint": endpoint, "model": model, "share": int(share)}).encode()
+    req = _urlreq.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "X-Pool-Key": join_key or "",
+    })
+    try:
+        with _urlreq.urlopen(req, timeout=20) as resp:
+            data = _json.loads(resp.read().decode())
+    except _urlerr.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:200]
+        return f"pool join rejected ({e.code}) — {detail}"
+    except Exception as e:
+        return f"pool join failed: {e}"
+    env_path = os.path.join(cfg.bot_dir, ".env")
+    env_lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            env_lines = f.readlines()
+    kept = [ln for ln in env_lines if not ln.strip().startswith(("POOL_NODE_ID=", "POOL_NODE_SECRET="))]
+    kept.append(f"POOL_NODE_ID={data.get('name', '')}\n")
+    kept.append(f"POOL_NODE_SECRET={data.get('node_secret', '')}\n")
+    with open(env_path, "w") as f:
+        f.writelines(kept)
+    verb = "updated" if data.get("new") is False else "joined"
+    return f"{verb} the community pool as {data.get('name', 'node-????')} ({share}%)"
+
+
 def _step_pool():
     if not cfg.pool:
         return "skipped (not contributing)"
+    endpoint = cfg.remote_endpoint if (cfg.endpoint_mode == "remote" and cfg.remote_endpoint) else "http://127.0.0.1:11434"
+    broker = os.environ.get("POOL_BROKER_URL") or ""
+    join_key = os.environ.get("POOL_JOIN_KEY") or ""
+    if broker:
+        return _pool_join_remote(broker, join_key, endpoint, cfg.model, cfg.pool_share)
     sys.path.insert(0, cfg.bot_dir)
     try:
         import config as qcfg
-        enc_ep = qcfg.maybe_encrypt("pool_endpoint", cfg.remote_endpoint if (cfg.endpoint_mode == "remote" and cfg.remote_endpoint) else "http://127.0.0.1:11434")
+        enc_ep = qcfg.maybe_encrypt("pool_endpoint", endpoint)
         enc_m = qcfg.maybe_encrypt("pool_model", cfg.model)
     except Exception:
-        enc_ep, enc_m = cfg.remote_endpoint or "http://127.0.0.1:11434", cfg.model
+        enc_ep, enc_m = endpoint, cfg.model
     import sqlite3, secrets, datetime
     db_path = os.environ.get("DB_PATH") or os.path.join(cfg.bot_dir, "quaestio.db")
     conn = sqlite3.connect(db_path)
