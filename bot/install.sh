@@ -116,11 +116,10 @@ else
     BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
     curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
   fi
-  if [[ ! -f "$BOT_DIR/install_wizard.py" ]]; then
-    say "Fetching the install wizard…"
-    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
-    curl -fsSL "$BASE/install_wizard.py" -o "$BOT_DIR/install_wizard.py" || warn "Could not download the install wizard."
-  fi
+  # The wizard gets refreshed on every run so fixes/tweaks reach you instantly.
+  say "Fetching the latest install wizard…"
+  BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+  curl -fsSL "$BASE/install_wizard.py" -o "$BOT_DIR/install_wizard.py" || warn "Could not download the install wizard."
 fi
 chmod +x "$BOT_DIR/quaestio.py" 2>/dev/null || true
 

@@ -254,16 +254,15 @@ def install_menu():
     if not which("curl") and not which("python3"):
         boom("Can't install without curl or python3 on this machine.")
     wizard = os.path.join(BOT_DIR, "install_wizard.py")
-    if not os.path.isfile(wizard):
-        say("Downloading the installer wizard…")
-        base = os.environ.get("QUAESTIO_SRC",
-                              "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
-        os.makedirs(BOT_DIR, exist_ok=True)
-        try:
-            urllib.request.urlretrieve(f"{base}/install_wizard.py", wizard)
-        except Exception:
-            boom("Couldn't fetch the wizard. Run it directly instead:\n"
-                 "  curl -fsSL https://quaestio.online/bot/install.sh | bash")
+    os.makedirs(BOT_DIR, exist_ok=True)
+    say("Fetching the latest installer wizard…")
+    base = os.environ.get("QUAESTIO_SRC",
+                          "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+    try:
+        urllib.request.urlretrieve(f"{base}/install_wizard.py", wizard)
+    except Exception:
+        boom("Couldn't fetch the wizard. Run it directly instead:\n"
+             "  curl -fsSL https://quaestio.online/bot/install.sh | bash")
     try:
         import textual  # noqa: F401
     except Exception:
