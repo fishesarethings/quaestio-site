@@ -26,8 +26,16 @@ HOME = os.path.expanduser("~")
 INSTALL_DIR = os.environ.get("QUAESTIO_DIR", os.path.join(HOME, "quaestio"))
 BOT_DIR = os.path.join(INSTALL_DIR, "bot")
 VENV = os.path.join(INSTALL_DIR, ".venv")
+def _default_keyfile_path() -> str:
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("USERPROFILE", ""), ".quaestio", "keyfile")
+    if sys.platform == "darwin":
+        return os.path.join(HOME, ".quaestio", "keyfile")
+    return "/etc/quaestio/keyfile"
+
+
 SERVICE = "/etc/systemd/system/quaestio.service"
-KEYFILE_DEFAULT = "/etc/quaestio/keyfile"
+KEYFILE_DEFAULT = _default_keyfile_path()
 KEYFILE_LOCAL = os.path.join(INSTALL_DIR, "quaestio.key")
 
 RESET = "\033[0m"
@@ -338,8 +346,28 @@ def settings():
         say("No .env yet — creating one from the example.")
         shutil.copy(os.path.join(BOT_DIR, ".env.example"), env_file)
     say("Change Quaestio settings. Leave a field blank to keep it, type CLEAR to reset.\n")
-    for key, label, default, secret in ENV_QUESTIONS:
-        edit_env(key, label, default, secret)
+    if _tui():
+        import questionary
+        while True:
+            cur = {k: read_env(k) for k, _, _, _ in ENV_QUESTIONS}
+            choices = [
+                questionary.Choice(
+                    title=f"{label}{DIM}  —  currently: {('(hidden)' if secret and cur[k] else (cur[k] or '(not set)'))}{RESET}",
+                    value=("edit", k))
+                for k, label, _d, secret in ENV_QUESTIONS
+            ]
+            choices.append(questionary.Choice(title="✓ Done — save and restart", value=("done", None)))
+            pick = _pick("Pick a setting to change", choices)
+            if not pick or pick[0] == "done":
+                break
+            key = pick[1]
+            label = next(l for k, l, _d, _s in ENV_QUESTIONS if k == key)
+            default = next(d for k, _l, d, _s in ENV_QUESTIONS if k == key)
+            secret = next(s for k, _l, _d, s in ENV_QUESTIONS if k == key)
+            edit_env(key, label, default, secret)
+    else:
+        for key, label, default, secret in ENV_QUESTIONS:
+            edit_env(key, label, default, secret)
     say("\nSettings saved to " + env_file + " (permissions 600).")
     if which("ollama"):
         m = read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"
@@ -422,7 +450,69 @@ def help_text():
     print(f"  (no `quaestio` command yet? Run: python3 {os.path.join(BOT_DIR, 'quaestio.py')})")
 
 
+def _tui():
+    try:
+        import questionary  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _pick(title, choices, default=None):
+    import questionary
+    return questionary.select(
+        title,
+        choices=choices,
+        default=default,
+        use_indicator=True,
+        use_arrow_keys=True,
+    ).ask()
+
+
+def menu_tui():
+    """A proper TUI — arrow keys + enter, live status line. Needs
+    `questionary` (installed with the bot). Falls back to the numbered
+    menu when it isn't available."""
+    import questionary
+    os.system("clear" if os.name != "nt" else "cls")
+    print()
+    print(f"{BOLD}{CYAN}   ██████╗ ██╗   ██╗ █████╗ ███████╗████████╗██╗ ██████╗ {RESET}")
+    print(f"{BOLD}{CYAN}  ██╔═══██╗██║   ██║██╔══██╗██╔════╝╚══██╔══╝██║██╔═══██╗{RESET}")
+    print(f"{BOLD}{CYAN}  ██║   ██║██║   ██║███████║███████╗   ██║   ██║██║   ██║{RESET}")
+    print(f"{BOLD}{CYAN}  ██║▄▄ ██║██║   ██║██╔══██║╚════██║   ██║   ██║██║▄▄ ██║{RESET}")
+    print(f"{BOLD}{CYAN}  ╚██████╔╝╚██████╔╝██║  ██║███████║   ██║   ██║╚██████╔╝{RESET}")
+    print(f"{BOLD}{CYAN}   ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝ {RESET}")
+    print(f"{BOLD}\n      server manager{RESET}   —   arrow keys to pick, Enter to run\n")
+
+    actions = [
+        ("Status", status, "what's installed / running"),
+        ("Start / Stop / Restart", restart, "control the bot"),
+        ("Settings", settings, "change tokens, model, timeout…"),
+        ("Contribute to the pool", contribute, "share part of your AI box"),
+        ("Local web panel", localweb, "turn the localhost settings page on/off"),
+        ("Update", update, "pull the latest bot code"),
+        ("Uninstall", uninstall, "remove everything, nothing left behind"),
+        ("About / help", help_text, "how everything works"),
+    ]
+    while True:
+        choices = [
+            questionary.Choice(
+                title=f"{name:<22} {DIM}{desc}{RESET}", value=("run", fn))
+            for name, fn, desc in actions
+        ]
+        choices.append(questionary.Choice(title=f"{RED}Quit{RESET}", value=("quit", None)))
+        pick = _pick("What would you like to do?", choices)
+        if not pick or pick[0] == "quit":
+            print(f"\n  {CYAN}[quaestio]{RESET} Bye! 👋\n")
+            return
+        print()
+        pick[1]()
+        input(f"\n  {DIM}Press Enter to go back to the menu…{RESET} ")
+
+
 def menu():
+    if _tui():
+        return menu_tui()
     os.system("clear" if os.name != "nt" else "cls")
     print(f"{BOLD}{CYAN}┌─────────────────────────────────────────────┐{RESET}")
     print(f"{BOLD}{CYAN}│  Quaestio — server manager                  │{RESET}")

@@ -94,7 +94,7 @@ The installer also adds a `quaestio` command to your PATH. Type it from any
 folder:
 
 ```
-quaestio               opens the friendly menu
+quaestio               opens the interactive arrow-key menu
 quaestio help          lists every command
 quaestio status        what's here / running
 quaestio settings      change any setting

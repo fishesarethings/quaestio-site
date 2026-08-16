@@ -45,9 +45,18 @@ need_python() {
 
 # --- 1b. Encryption keyfile ----------------------------------------------------
 keyfile() {
-  local keyfile="${QUAESTIO_KEY_FILE:-/etc/quaestio/keyfile}"
+  # Same default as bot/config.py: Linux → /etc/quaestio/keyfile (sudo),
+  # macOS → ~/.quaestio/keyfile (no sudo), override with QUAESTIO_KEY_FILE.
+  local dflt
+  if [[ -n "${QUAESTIO_KEY_FILE:-}" ]]; then
+    local keyfile="$QUAESTIO_KEY_FILE"
+  elif [[ "$(uname -s)" == "Linux" ]]; then
+    local keyfile="/etc/quaestio/keyfile"
+  else
+    local keyfile="$HOME/.quaestio/keyfile"
+  fi
   if [[ ! -f "$keyfile" ]]; then
-    say "Creating encryption key at $keyfile (needs sudo on Linux)."
+    say "Creating encryption key at $keyfile"$([[ "$(uname -s)" == "Linux" ]] && echo " (needs sudo on Linux)").
     if [[ "$(uname -s)" == "Linux" ]]; then
       sudo mkdir -p "$(dirname "$keyfile")"
       sudo python3 -c "from cryptography.fernet import Fernet; import sys; open('$keyfile','wb').write(Fernet.generate_key())" 2>/dev/null \
