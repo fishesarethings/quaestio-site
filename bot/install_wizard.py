@@ -50,6 +50,7 @@ def is_linux_systemd():
 if not os.environ.get("QUAESTIO_NO_WIZARD"):
     try:
         from textual.app import App, ComposeResult
+        from textual.binding import Binding
         from textual.containers import Horizontal, Vertical, VerticalScroll
         from textual.screen import ModalScreen, Screen
         from textual.widgets import Button, Checkbox, Footer, Header, Input, RichLog, Select, Static
@@ -83,6 +84,46 @@ cfg = Cfg()
 
 
 # ---------------------------------------------------------------------------
+# Shared navigation. Every form screen lets you move between fields/buttons
+# with ↑/↓/←/→ (or hjkl) exactly like Tab does. Selects no longer hijack
+# ↑/↓ to open their dropdown — arrows move focus instead; Enter/Space opens it.
+# ---------------------------------------------------------------------------
+
+NAV_KEYS = [
+    ("up,k", "focus_prev", "Up"),
+    ("down,j", "focus_next", "Down"),
+    ("left,h", "focus_prev", "Left"),
+    ("right,l", "focus_next", "Right"),
+]
+
+
+class NavSelect(Select, inherit_bindings=False):
+    BINDINGS = [
+        Binding("enter,space", "show_overlay", "Show menu", show=False),
+        Binding("escape", "close_overlay", "Close menu", show=False),
+    ]
+
+    def action_close_overlay(self):
+        self.expanded = False
+
+
+class _NavScreen(Screen):
+    BINDINGS = [("escape", "go_back", "Back")] + NAV_KEYS
+
+    def action_go_back(self):
+        try:
+            self.query_one("#back").press()
+        except Exception:
+            pass
+
+    def action_focus_next(self):
+        self.focus_next()
+
+    def action_focus_prev(self):
+        self.focus_previous()
+
+
+# ---------------------------------------------------------------------------
 # Screens
 # ---------------------------------------------------------------------------
 class Welcome(Static):
@@ -111,7 +152,10 @@ class Welcome(Static):
 
 
 class Start(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
+    BINDINGS = [("escape", "quit_wizard", "Quit")]
+
+    def action_quit_wizard(self):
+        self.app.exit()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -123,9 +167,9 @@ class Start(Screen):
             self.app.switch_screen("components")
 
 
-class Components(Screen):
+class Components(_NavScreen):
     BINDINGS = [
-        ("escape", "app.pop_screen", "Back"),
+        ("escape", "go_back", "Back"),
         ("up,k", "focus_prev", "Up"),
         ("down,j", "focus_next", "Down"),
         ("left,h", "nav_back", "Back button"),
@@ -182,7 +226,13 @@ class Components(Screen):
 
 
 class AskPool(ModalScreen):
-    BINDINGS = [("escape", "dismiss_no", "No")]
+    BINDINGS = [("escape", "dismiss_no", "No")] + NAV_KEYS
+
+    def action_focus_next(self):
+        self.focus_next("Button")
+
+    def action_focus_prev(self):
+        self.focus_previous("Button")
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal"):
@@ -205,14 +255,12 @@ class AskPool(ModalScreen):
         self.dismiss("yes" if event.button.id == "yes" else "no")
 
 
-class Connections(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
-
+class Connections(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
             yield Static("  [b]Where does the AI run?[/b]", classes="title")
-            mode = Select(
+            mode = NavSelect(
                 [("This machine (recommended)", "local"), ("Another computer on your network", "remote")],
                 value=("remote" if cfg.remote_endpoint else "local"), id="mode", prompt="Pick the AI connection",
             )
@@ -222,7 +270,7 @@ class Connections(Screen):
             yield Static("Remote Ollama URL:", classes="lbl")
             yield remote
             yield Static("  [b]Model[/b]  — bigger = smarter, slower, more RAM.", classes="title")
-            yield Select([(m, m) for m in _models()], value=cfg.model, id="model", prompt="Pick a model")
+            yield NavSelect([(m, m) for m in _models()], value=cfg.model, id="model", prompt="Pick a model")
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
                 yield Button("Back", variant="default", id="back")
@@ -244,9 +292,7 @@ class Connections(Screen):
             self.app.switch_screen("token")
 
 
-class Token(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
-
+class Token(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
@@ -276,9 +322,7 @@ class Token(Screen):
                 self.app.switch_screen("review")
 
 
-class Pool(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
-
+class Pool(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
@@ -287,7 +331,7 @@ class Pool(Screen):
                 "  You'll stay anonymous — the pool only ever sees a random node ID, and your\n"
                 "  endpoint + model are encrypted at rest. Nobody can piece together who you are.",
                 classes="sub")
-            yield Select([("10% — spare cycles only", 10), ("25%", 25), ("50% (default)", 50), ("75%", 75), ("100% — share it all", 100)],
+            yield NavSelect([("10% — spare cycles only", 10), ("25%", 25), ("50% (default)", 50), ("75%", 75), ("100% — share it all", 100)],
                          value=50, id="share", prompt="How much of your box to lend")
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
@@ -303,9 +347,7 @@ class Pool(Screen):
             self.app.switch_screen("review")
 
 
-class Review(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
-
+class Review(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
@@ -324,9 +366,7 @@ class Review(Screen):
             self.app.switch_screen("run")
 
 
-class Run(Screen):
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
-
+class Run(_NavScreen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="body"):
