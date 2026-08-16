@@ -256,6 +256,8 @@ def _migrate_pool_health(conn):
         conn.execute("ALTER TABLE hosters ADD COLUMN last_ok TEXT DEFAULT ''")
     if "last_fail" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''")
+    if "served" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN served INTEGER DEFAULT 0")
 
 
 def _migrate_pool_anonymize(conn):
@@ -506,7 +508,7 @@ def pool_hosters(enabled_only=True):
     """
     conn = db()
     rows = conn.execute(
-        "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail FROM hosters"
+        "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served FROM hosters"
         + (" WHERE enabled=1" if enabled_only else "")
         + " ORDER BY name"
     ).fetchall()
@@ -518,6 +520,7 @@ def pool_hosters(enabled_only=True):
         h["model"] = maybe_decrypt("pool_model", h["model"] or "")
         h["failed"] = h["failed"] or 0
         h["down_until"] = h["down_until"] or ""
+        h["served"] = h["served"] or 0
         out.append(h)
     return out
 
@@ -549,7 +552,7 @@ def pool_record(endpoint, ok: bool):
             continue
         hid = int(r["id"])
         if ok:
-            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=? WHERE id=?",
+            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=?, served=served+1 WHERE id=?",
                          (now.isoformat(), hid))
             continue
         conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now.isoformat(), hid))

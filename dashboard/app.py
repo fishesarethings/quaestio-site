@@ -129,10 +129,13 @@ def _migrate_pool_health(conn):
 
 
 def _migrate_pool_broker(conn):
-    """Community-pool broker secret so remote nodes can update/leave by proof."""
+    """Community-pool broker secret so remote nodes can update/leave by proof,
+    plus a request counter so a node can see its contributions."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(hosters)").fetchall()}
     if "node_secret_hash" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN node_secret_hash TEXT DEFAULT ''")
+    if "served" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN served INTEGER DEFAULT 0")
 
 
 def _migrate_pool_anonymize(conn):
@@ -643,7 +646,7 @@ async def api_host_pool(request: Request):
     await require_host_admin(request)
     conn = db()
     rows = conn.execute(
-        "SELECT id, name, endpoint, model, share, enabled FROM hosters ORDER BY name"
+        "SELECT id, name, endpoint, model, share, enabled, served FROM hosters ORDER BY name"
     ).fetchall()
     conn.close()
     # Privacy: never export raw endpoints or models. The management UI only
@@ -652,6 +655,7 @@ async def api_host_pool(request: Request):
     for r in rows:
         d = dict(r)
         d["name"] = d.get("name")
+        d["served"] = d["served"] or 0
         d.pop("endpoint", None)
         d.pop("model", None)
         contributors.append(d)
@@ -730,13 +734,13 @@ def _node_secret_hash(secret: str) -> str:
 
 @app.post("/api/pool/register")
 async def api_pool_register(request: Request):
-    """One-click pool join. The node proves it holds the pool join key, then we
-    upsert its row under an anonymous node name and return the secret that lets
-    it update or leave later. Endpoints/models are encrypted at rest and only
-    the bot can decrypt them."""
+    """One-click pool join. Proof of the pool join key registers you as an
+    active node instantly; without it you register as pending and the host
+    enables you from the panel. Either way the node gets an anonymous name and
+    a secret it must keep to update or leave. Endpoints/models are encrypted
+    at rest and only the bot can decrypt them."""
     key = (request.headers.get("x-pool-key") or "").strip()
-    if not POOL_JOIN_KEY or key != POOL_JOIN_KEY:
-        raise HTTPException(403, "Invalid or missing pool join key (POOL_JOIN_KEY).")
+    has_key = bool(POOL_JOIN_KEY) and key == POOL_JOIN_KEY
     body = await request.json()
     endpoint = (body.get("endpoint") or "").strip()
     if not endpoint:
@@ -748,43 +752,44 @@ async def api_pool_register(request: Request):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if secret:
         row = conn.execute(
-            "SELECT id, name FROM hosters WHERE node_secret_hash=?",
+            "SELECT id, name, enabled FROM hosters WHERE node_secret_hash=?",
             (_node_secret_hash(secret),),
         ).fetchone()
         if row:
+            enabled = 1 if has_key else int(row["enabled"] or 0)
             conn.execute(
-                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=1, at=? WHERE id=?",
+                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=?, at=? WHERE id=?",
                 (qconfig.maybe_encrypt("pool_endpoint", endpoint),
-                 qconfig.maybe_encrypt("pool_model", model), share, now, row["id"]),
+                 qconfig.maybe_encrypt("pool_model", model), share, enabled, now, row["id"]),
             )
             conn.commit()
             conn.close()
-            return {"ok": True, "name": row["name"], "node_secret": secret, "new": False}
+            return {"ok": True, "name": row["name"], "node_secret": secret,
+                    "new": False, "status": "active" if enabled else "pending"}
     name = "node-" + secrets.token_hex(4)
     new_secret = secrets.token_urlsafe(24)
+    enabled = 1 if has_key else 0
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash)"
-        " VALUES (?, ?, ?, ?, 1, 'broker', ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?)",
         (name, qconfig.maybe_encrypt("pool_endpoint", endpoint),
-         qconfig.maybe_encrypt("pool_model", model), share, now, _node_secret_hash(new_secret)),
+         qconfig.maybe_encrypt("pool_model", model), share, enabled, now, _node_secret_hash(new_secret)),
     )
     conn.commit()
     conn.close()
-    return {"ok": True, "name": name, "node_secret": new_secret, "new": True}
+    return {"ok": True, "name": name, "node_secret": new_secret,
+            "new": True, "status": "active" if enabled else "pending"}
 
 
 @app.post("/api/pool/unregister")
 async def api_pool_unregister(request: Request):
-    """Node leaves the pool. Rows are kept but disabled so history survives."""
+    """Node leaves the pool. Its row is removed; re-registering starts fresh."""
     body = await request.json()
     secret = (body.get("node_secret") or "").strip()
     if not secret:
         raise HTTPException(400, "node_secret is required")
     conn = db()
-    conn.execute(
-        "UPDATE hosters SET enabled=0 WHERE node_secret_hash=?",
-        (_node_secret_hash(secret),),
-    )
+    conn.execute("DELETE FROM hosters WHERE node_secret_hash=?", (_node_secret_hash(secret),))
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -798,7 +803,7 @@ async def api_pool_nodes(request: Request):
         raise HTTPException(401, "Bot token required")
     conn = db()
     rows = conn.execute(
-        "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail"
+        "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served"
         " FROM hosters WHERE enabled=1 ORDER BY name"
     ).fetchall()
     conn.close()
@@ -810,9 +815,44 @@ async def api_pool_nodes(request: Request):
             "share": r["share"], "failed": r["failed"] or 0,
             "down_until": r["down_until"] or "",
             "last_ok": r["last_ok"] or "", "last_fail": r["last_fail"] or "",
+            "served": r["served"] or 0,
         }
         for r in rows
     ]}
+
+
+@app.post("/api/pool/me")
+async def api_pool_me(request: Request):
+    """A node's own contribution stats, guarded by its node secret. This is
+    what `quaestio contribute` / pool status shows so contributors can see
+    what they've shared and how many requests their box served."""
+    body = await request.json()
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    conn = db()
+    row = conn.execute(
+        "SELECT name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served, at"
+        " FROM hosters WHERE node_secret_hash=?",
+        (_node_secret_hash(secret),),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Unknown node — it may have been removed. Re-run `quaestio contribute`.")
+    return {
+        "name": row["name"],
+        "share": row["share"] or 0,
+        "enabled": int(row["enabled"] or 0),
+        "status": "active" if (row["enabled"] or 0) else "pending",
+        "model": qconfig.maybe_decrypt("pool_model", row["model"] or ""),
+        "endpoint": qconfig.maybe_decrypt("pool_endpoint", row["endpoint"] or ""),
+        "served": row["served"] or 0,
+        "failed": row["failed"] or 0,
+        "down_until": row["down_until"] or "",
+        "last_ok": row["last_ok"] or "",
+        "last_fail": row["last_fail"] or "",
+        "joined_at": row["at"] or "",
+    }
 
 
 @app.post("/api/pool/report")
@@ -829,7 +869,8 @@ async def api_pool_report(request: Request):
         hid = row["id"]
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if ok:
-            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=? WHERE id=?", (now, hid))
+            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=?, served=served+1 WHERE id=?",
+                         (now, hid))
         else:
             conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now, hid))
             fails = conn.execute("SELECT failed FROM hosters WHERE id=?", (hid,)).fetchone()

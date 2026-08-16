@@ -635,35 +635,20 @@ def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, sha
     with open(env_path, "w") as f:
         f.writelines(kept)
     verb = "updated" if data.get("new") is False else "joined"
-    return f"{verb} the community pool as {data.get('name', 'node-????')} ({share}%)"
+    if data.get("status") == "pending":
+        return (f"{verb} the community pool as {data.get('name', 'node-????')} ({share}%) — "
+                "pending host approval. See the panel Host → Community pool.")
+    return f"{verb} the community pool as {data.get('name', 'node-????')} ({share}%) — requests now route to you"
+
+POOL_BROKER = os.environ.get("POOL_BROKER_URL") or "https://admin.quaestio.online"
 
 
 def _step_pool():
     if not cfg.pool:
         return "skipped (not contributing)"
     endpoint = cfg.remote_endpoint if (cfg.endpoint_mode == "remote" and cfg.remote_endpoint) else "http://127.0.0.1:11434"
-    broker = os.environ.get("POOL_BROKER_URL") or ""
     join_key = os.environ.get("POOL_JOIN_KEY") or ""
-    if broker:
-        return _pool_join_remote(broker, join_key, endpoint, cfg.model, cfg.pool_share)
-    sys.path.insert(0, cfg.bot_dir)
-    try:
-        import config as qcfg
-        enc_ep = qcfg.maybe_encrypt("pool_endpoint", endpoint)
-        enc_m = qcfg.maybe_encrypt("pool_model", cfg.model)
-    except Exception:
-        enc_ep, enc_m = endpoint, cfg.model
-    import sqlite3, secrets, datetime
-    db_path = os.environ.get("DB_PATH") or os.path.join(cfg.bot_dir, "quaestio.db")
-    conn = sqlite3.connect(db_path)
-    conn.execute("""CREATE TABLE IF NOT EXISTS hosters (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, endpoint TEXT, model TEXT,
-        share INTEGER DEFAULT 50, enabled INTEGER DEFAULT 1, added_by TEXT, at TEXT)""")
-    conn.execute("INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?,?,?,?,1,'installer',?)",
-                 ("node-" + secrets.token_hex(2), enc_ep, enc_m, cfg.pool_share, datetime.datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-    return f"contributed {cfg.pool_share}% anonymously to the pool"
+    return _pool_join_remote(POOL_BROKER, join_key, endpoint, cfg.model, cfg.pool_share)
 
 
 def _step_web():

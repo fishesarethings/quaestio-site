@@ -239,6 +239,11 @@ def status():
         say(f"Model: {model} · Endpoint: {endpoint}")
     token = read_env("BOT_TOKEN")
     say("Bot token configured: " + ("yes (hidden)" if token else "no — run `settings`"), GREEN if token else YELLOW)
+    if read_env("POOL_NODE_SECRET"):
+        d = _pool_status_data(read_env("POOL_NODE_SECRET"))
+        if d and "error" not in d and "name" in d:
+            say(f"Community pool: {d['name']} · {d['status']} · {d['served']} requests served",
+                GREEN if d["status"] == "active" else YELLOW)
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +294,120 @@ def _anon_name() -> str:
     return "node-" + secrets.token_hex(2)
 
 
+def _broker_url():
+    return (read_env("POOL_BROKER_URL") or "").strip() or "https://admin.quaestio.online"
+
+
+def _pool_json(url, payload):
+    import json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return {"error": f"broker {e.code}: {e.read().decode(errors='replace')[:140]}"}
+    except Exception as e:
+        return {"error": f"broker unreachable ({e})"}
+
+
+def _env_file_path():
+    if os.path.isdir(BOT_DIR):
+        return os.path.join(BOT_DIR, ".env")
+    return os.path.join(os.getcwd(), ".env")
+
+
+def _write_pool_creds(data):
+    env_path = _env_file_path()
+    os.makedirs(os.path.dirname(env_path) or ".", exist_ok=True)
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            lines = f.readlines()
+    kept = [ln for ln in lines if not ln.strip().startswith(("POOL_NODE_ID=", "POOL_NODE_SECRET="))]
+    kept.append(f"POOL_NODE_ID={data.get('name', '')}\n")
+    kept.append(f"POOL_NODE_SECRET={data.get('node_secret', '')}\n")
+    with open(env_path, "w") as f:
+        f.writelines(kept)
+
+
+def _pool_status_data(node_secret):
+    d = _pool_json(_broker_url().rstrip("/") + "/api/pool/me", {"node_secret": node_secret})
+    return None if d.get("error", "").startswith("broker 404") else d
+
+
+def pool_status():
+    """Show this box's contribution to the community pool."""
+    node_secret = read_env("POOL_NODE_SECRET") or ""
+    node_id = read_env("POOL_NODE_ID") or ""
+    if not node_secret:
+        say("This box isn't in the community pool yet.", YELLOW)
+        say("Join with:  quaestio contribute", GREEN)
+        return
+    say(f"Community pool node: {node_id or 'node-?'}\n")
+    d = _pool_status_data(node_secret)
+    if not d:
+        say("This node no longer exists in the pool (removed by the host?).", YELLOW)
+        say("Re-join with:  quaestio contribute", GREEN)
+        return
+    if "error" in d:
+        say(f"Couldn't reach the pool broker ({d['error']}).", YELLOW)
+        say(f"Broker: {_broker_url()}")
+        return
+    say(f"  Node:      {d['name']}", GREEN)
+    if d["status"] == "active":
+        say("  Status:    active — requests route to your box", GREEN)
+    else:
+        say("  Status:    pending host approval (see the panel Host → Community pool)", YELLOW)
+    say(f"  Share:     {d['share']}% of your box")
+    say(f"  Model:     {d.get('model') or '?'}")
+    say(f"  Requests served:  {d['served']}", GREEN)
+    if d.get("last_ok"):
+        say(f"  Last ok:   {d['last_ok'][:19]} UTC")
+    if not d.get("last_ok") and d.get("last_fail"):
+        say(f"  Last fail: {d['last_fail'][:19]} UTC (your box looks unreachable — "
+            "make sure Ollama is open to the internet)", RED)
+    say("\nChange details:  quaestio contribute   ·   Leave the pool:  quaestio contribute")
+
+
+pool = pool_status
+
+
 def contribute():
-    say("SELF-HOST & CONTRIBUTE — lend part of your AI box to the community pool.")
-    say("The pool lets Quaestio route shared-AI servers across many Ollama boxes.\n")
-    say("Your identity stays anonymous: the pool only ever sees a random node ID, "
-        "and your endpoint + model are encrypted at rest.")
+    say("COMMUNITY POOL — lend part of your AI box, borrow from others when busy.\n")
+    node_secret = read_env("POOL_NODE_SECRET") or ""
+    if node_secret:
+        d = _pool_status_data(node_secret)
+        if d and "error" not in d and "name" in d:
+            say(f"You're node {d['name']} — {d['status']}, {d['share']}% share, "
+                f"{d['served']} requests served.")
+            choice = input("\nWhat do you want to do?\n"
+                           "  [u] update endpoint / model / share\n"
+                           "  [l] leave the pool\n"
+                           "  [c] cancel\n"
+                           "> ").strip().lower()
+            if choice == "l":
+                let = _pool_json(_broker_url().rstrip("/") + "/api/pool/unregister",
+                                 {"node_secret": node_secret})
+                if "error" not in let:
+                    say("You left the pool — your box is no longer shared.", GREEN)
+                else:
+                    say(f"Couldn't reach the broker to leave ({let['error']}).", YELLOW)
+                _write_pool_creds({"name": "", "node_secret": ""})
+                return
+            if choice != "u":
+                return
+        elif d is None:
+            say("This node's gone from the pool — re-registering as a fresh one.")
+            node_secret = ""
+        else:
+            say(f"Pool broker unreachable ({d['error']}). Showing stored registration.")
     endpoint = input("Your Ollama URL [default http://127.0.0.1:11434]: ").strip() or "http://127.0.0.1:11434"
     model = input("Model you're sharing [default qwen2.5:1.5b]: ").strip() or "qwen2.5:1.5b"
     share = input("How much of your box to share, percent [10-100, default 50]: ").strip() or "50"
@@ -301,23 +415,23 @@ def contribute():
         share = max(10, min(100, int(share)))
     except ValueError:
         share = 50
-    say("Registering your contribution in the local pool…", DIM)
-    # The pool is stored in the bot's own database so it routes across it.
-    db_path = read_env("DB_PATH")
-    if not db_path:
-        cand = os.path.join(BOT_DIR, "quaestio.db")
-        db_path = cand if os.path.isdir(BOT_DIR) else os.path.join(os.getcwd(), "quaestio.db")
-    flag = os.path.join(os.path.dirname(os.path.abspath(db_path)), ".contributed")
-    try:
-        if os.path.isfile(flag):
-            say("This box is already contributing to the pool. Remove it from the "
-                "dashboard Host → Community pool, or delete the marker file and "
-                "re-run.", DIM)
-            return
-    except Exception:
-        pass
-    import sqlite3
-    # Encrypt at rest with the same key the bot uses.
+    say("Connecting to the community pool…", DIM)
+    reg = _pool_json(_broker_url().rstrip("/") + "/api/pool/register",
+                     {"endpoint": endpoint, "model": model, "share": share,
+                      **({"node_secret": node_secret} if node_secret else {})})
+    if "error" not in reg and reg.get("name"):
+        _write_pool_creds(reg)
+        if reg.get("status") == "pending":
+            say(f"Connected to the community pool as {reg['name']} ({share}%) — "
+                "pending host approval.", GREEN)
+        else:
+            say(f"Connected to the community pool as {reg['name']} ({share}%) — "
+                "requests now route to you.", GREEN)
+        say("See your contributions anytime:  quaestio pool", GREEN)
+        return
+    # Broker unreachable → fall back to the local pool so a self-hosted bot works.
+    say(f"The pool broker isn't reachable ({reg.get('error', '?')}). "
+        "Registering in the local pool instead.", YELLOW)
     sys.path.insert(0, BOT_DIR)
     try:
         import config as quaestio_cfg
@@ -325,6 +439,11 @@ def contribute():
         enc_model = quaestio_cfg.maybe_encrypt("pool_model", model)
     except Exception:
         enc_endpoint, enc_model = endpoint, model
+    db_path = read_env("DB_PATH")
+    if not db_path:
+        cand = os.path.join(BOT_DIR, "quaestio.db")
+        db_path = cand if os.path.isdir(BOT_DIR) else os.path.join(os.getcwd(), "quaestio.db")
+    import sqlite3
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) "
@@ -333,11 +452,7 @@ def contribute():
     )
     conn.commit()
     conn.close()
-    say(f"Done. You're contributing {share}% of your box to the pool as an "
-        "anonymous node.", GREEN)
-    say("Other servers can now hand off AI calls to you. Lower the number anytime "
-        "with the dashboard Host → Community pool, or re-run this command. No one "
-        "can see your endpoint, model or who you are.")
+    say(f"Done. You're contributing {share}% of your box to the local pool.", GREEN)
 
 
 # ---------------------------------------------------------------------------
@@ -605,117 +720,118 @@ if _TApp is not None and ModalScreen is not None:
                 self.dismiss(None)
     
     
-class SettingsApp(_TApp):
-        TITLE = "Quaestio — settings"
-        CSS = """
-        Screen { background: #0d1117; }
-        #body { padding: 0 3; }
-        #list { border: round #30363d; height: 1fr; }
-        #list:focus-within { border: round #58a6ff; }
-        ListView { height: 1fr; }
-        ListItem { height: 3; padding: 0 1; }
-        ListItem.--highlight { background: #1f6feb; }
-        #bottom { height: 4; align-horizontal: right; }
-        #bottom Button { margin: 0 1; }
-        .modal { width: 60; height: auto; background: #161b22; border: round #58a6ff; padding: 1 2; }
-        #mnav { height: auto; align-horizontal: right; }
-        #mnav Button { margin: 0 1; }
-        """
-        BINDINGS = [
-            Binding("q", "quit", "Quit", priority=True),
-            Binding("escape", "quit", "Quit", priority=True),
-            Binding("up,k", "cursor_up", "Up", show=False),
-            Binding("down,j", "cursor_down", "Down", show=False),
-        ]
+    if _TApp is not None and ModalScreen is not None:
+        class SettingsApp(_TApp):
+            TITLE = "Quaestio — settings"
+            CSS = """
+            Screen { background: #0d1117; }
+            #body { padding: 0 3; }
+            #list { border: round #30363d; height: 1fr; }
+            #list:focus-within { border: round #58a6ff; }
+            ListView { height: 1fr; }
+            ListItem { height: 3; padding: 0 1; }
+            ListItem.--highlight { background: #1f6feb; }
+            #bottom { height: 4; align-horizontal: right; }
+            #bottom Button { margin: 0 1; }
+            .modal { width: 60; height: auto; background: #161b22; border: round #58a6ff; padding: 1 2; }
+            #mnav { height: auto; align-horizontal: right; }
+            #mnav Button { margin: 0 1; }
+            """
+            BINDINGS = [
+                Binding("q", "quit", "Quit", priority=True),
+                Binding("escape", "quit", "Quit", priority=True),
+                Binding("up,k", "cursor_up", "Up", show=False),
+                Binding("down,j", "cursor_down", "Down", show=False),
+            ]
     
-        def compose(self) -> ComposeResult:
-            yield Header(show_clock=True)
-            with Vertical(id="body"):
-                yield Static("[b]Settings[/b] — pick a row, ⏎ to edit. Everything stays on this machine.",
-                             classes="pvhint")
-                yield ListView(id="list")
-                yield Static("  ↑↓/j/k move · ⏎ edit · [b]q[/b]/esc quit · [b]Restart & done[/b] to apply", id="keys")
-                with Horizontal(id="bottom"):
-                    yield Button("Pull AI model", id="pull")
-                    yield Button("Restart & done", variant="success", id="done")
-            yield Footer()
+            def compose(self) -> ComposeResult:
+                yield Header(show_clock=True)
+                with Vertical(id="body"):
+                    yield Static("[b]Settings[/b] — pick a row, ⏎ to edit. Everything stays on this machine.",
+                                 classes="pvhint")
+                    yield ListView(id="list")
+                    yield Static("  ↑↓/j/k move · ⏎ edit · [b]q[/b]/esc quit · [b]Restart & done[/b] to apply", id="keys")
+                    with Horizontal(id="bottom"):
+                        yield Button("Pull AI model", id="pull")
+                        yield Button("Restart & done", variant="success", id="done")
+                yield Footer()
     
-        def _build_items(self):
-            from textual.widgets import ListItem, ListView, Static
-            lv = self.query_one("#list", ListView)
-            lv.remove_children(list(lv.children))
-            first_pool = True
-            for section, key, label, secret, kind in SETTINGS_ROWS:
-                if kind == "pool" and first_pool:
-                    first_pool = False
+            def _build_items(self):
+                from textual.widgets import ListItem, ListView, Static
+                lv = self.query_one("#list", ListView)
+                lv.remove_children(list(lv.children))
+                first_pool = True
+                for section, key, label, secret, kind in SETTINGS_ROWS:
+                    if kind == "pool" and first_pool:
+                        first_pool = False
+                        r = _settings_pool_row()
+                        share = r["share"] if r else 0
+                        lv.append(ListItem(
+                            Static(f"[b]● Community pool[/b]  [dim]lending {share}% of your box to other servers[/dim]",
+                                   classes="sechead"),
+                            id="poolhdr"))
+                    lv.append(ListItem(
+                        Static(f"[b]{label}[/b]" + ("  [dim](secret)[/dim]" if secret else ""), classes="slbl"),
+                        Static(f"[dim]    {_settings_current(kind, key)}[/dim]", classes="sval", id="v_" + key),
+                        id="row_" + key,
+                    ))
+    
+            def on_mount(self) -> None:
+                self._build_items()
+                self.query_one("#list", ListView).focus()
+    
+            def on_list_view_selected(self, ev) -> None:
+                row_id = getattr(ev.item, "id", "") or ""
+                if not row_id.startswith("row_"):
+                    return
+                key = row_id[len("row_"):]
+                kind = next(_kk for _k, rk, _l, _s, _kk in SETTINGS_ROWS if rk == key)
+                secret = next(s for _k, rk, _l, s, _kk in SETTINGS_ROWS if rk == key)
+                if kind == "pool":
+                    r = _settings_pool_row()
+                    if r is None:
+                        init = "http://127.0.0.1:11434" if key == "POOL_ENDPOINT" else ("qwen2.5:1.5b" if key == "POOL_MODEL" else "50")
+                    elif key == "POOL_SHARE":
+                        init = str(r["share"])
+                    elif key == "POOL_ENDPOINT":
+                        init = r["endpoint"] or ""
+                    else:
+                        init = r["model"] or ""
+                else:
+                    init = read_env(key) or ""
+                label = next(l for _k, rk, l, _s, _kk in SETTINGS_ROWS if rk == key)
+                self.push_screen(SettingsEdit(label, init, secret),
+                                 callback=lambda result: self._apply_row(key, kind, result))
+    
+            def _apply_row(self, key, kind, result) -> None:
+                if result is None:
+                    return
+                if kind == "env":
+                    write_env_value(key, result)
+                else:
+                    r = _settings_pool_row()
+                    endpoint = result if key == "POOL_ENDPOINT" else (
+                        r["endpoint"] if r else (read_env("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"))
+                    model = result if key == "POOL_MODEL" else (
+                        r["model"] if r else (read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"))
+                    share = int(result) if key == "POOL_SHARE" else (r["share"] if r else 50)
+                    _pool_apply(endpoint or "http://127.0.0.1:11434", model or "qwen2.5:1.5b", share)
+                self.query_one("#v_" + key, Static).update(f"[dim]    {_settings_current(kind, key)}[/dim]")
+                if kind == "pool":
                     r = _settings_pool_row()
                     share = r["share"] if r else 0
-                    lv.append(ListItem(
-                        Static(f"[b]● Community pool[/b]  [dim]lending {share}% of your box to other servers[/dim]",
-                               classes="sechead"),
-                        id="poolhdr"))
-                lv.append(ListItem(
-                    Static(f"[b]{label}[/b]" + ("  [dim](secret)[/dim]" if secret else ""), classes="slbl"),
-                    Static(f"[dim]    {_settings_current(kind, key)}[/dim]", classes="sval", id="v_" + key),
-                    id="row_" + key,
-                ))
+                    self.query_one("#poolhdr").query_one(Static).update(
+                        f"[b]● Community pool[/b]  [dim]lending {share}% of your box to other servers[/dim]")
+                self.query_one("#list", ListView).focus()
     
-        def on_mount(self) -> None:
-            self._build_items()
-            self.query_one("#list", ListView).focus()
-    
-        def on_list_view_selected(self, ev) -> None:
-            row_id = getattr(ev.item, "id", "") or ""
-            if not row_id.startswith("row_"):
-                return
-            key = row_id[len("row_"):]
-            kind = next(_kk for _k, rk, _l, _s, _kk in SETTINGS_ROWS if rk == key)
-            secret = next(s for _k, rk, _l, s, _kk in SETTINGS_ROWS if rk == key)
-            if kind == "pool":
-                r = _settings_pool_row()
-                if r is None:
-                    init = "http://127.0.0.1:11434" if key == "POOL_ENDPOINT" else ("qwen2.5:1.5b" if key == "POOL_MODEL" else "50")
-                elif key == "POOL_SHARE":
-                    init = str(r["share"])
-                elif key == "POOL_ENDPOINT":
-                    init = r["endpoint"] or ""
-                else:
-                    init = r["model"] or ""
-            else:
-                init = read_env(key) or ""
-            label = next(l for _k, rk, l, _s, _kk in SETTINGS_ROWS if rk == key)
-            self.push_screen(SettingsEdit(label, init, secret),
-                             callback=lambda result: self._apply_row(key, kind, result))
-    
-        def _apply_row(self, key, kind, result) -> None:
-            if result is None:
-                return
-            if kind == "env":
-                write_env_value(key, result)
-            else:
-                r = _settings_pool_row()
-                endpoint = result if key == "POOL_ENDPOINT" else (
-                    r["endpoint"] if r else (read_env("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"))
-                model = result if key == "POOL_MODEL" else (
-                    r["model"] if r else (read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"))
-                share = int(result) if key == "POOL_SHARE" else (r["share"] if r else 50)
-                _pool_apply(endpoint or "http://127.0.0.1:11434", model or "qwen2.5:1.5b", share)
-            self.query_one("#v_" + key, Static).update(f"[dim]    {_settings_current(kind, key)}[/dim]")
-            if kind == "pool":
-                r = _settings_pool_row()
-                share = r["share"] if r else 0
-                self.query_one("#poolhdr").query_one(Static).update(
-                    f"[b]● Community pool[/b]  [dim]lending {share}% of your box to other servers[/dim]")
-            self.query_one("#list", ListView).focus()
-    
-        def on_button_pressed(self, event: Button.Pressed) -> None:
-            if event.button.id == "pull":
-                event.button.label = "Pulling…"
-                subprocess.run(["ollama", "pull", read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"],
-                               check=False)
-                event.button.label = "Pull AI model"
-            elif event.button.id == "done":
-                self.exit(True)
+            def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "pull":
+                    event.button.label = "Pulling…"
+                    subprocess.run(["ollama", "pull", read_env("OLLAMA_MODEL") or "qwen2.5:1.5b"],
+                                   check=False)
+                    event.button.label = "Pull AI model"
+                elif event.button.id == "done":
+                    self.exit(True)
     
     
 def settings_tui():
@@ -769,7 +885,8 @@ folder — nothing is cloud-hosted unless you choose to share.
     quaestio help                   this help as text
     quaestio status                 what's here / running
     quaestio settings               change any setting
-    quaestio contribute             join the resource pool
+    quaestio contribute             join the community pool
+    quaestio pool                   see your contributions
     quaestio update                 pull the latest bot
     quaestio uninstall              remove everything
 
@@ -792,6 +909,7 @@ def help_text():
     print("    quaestio status")
     print("    quaestio settings")
     print("    quaestio contribute")
+    print("    quaestio pool")
     print("    quaestio update")
     print("    quaestio uninstall")
     print(f"  (no `quaestio` command yet? Run: python3 {os.path.join(BOT_DIR, 'quaestio.py')})")
@@ -822,7 +940,8 @@ def _menu_actions():
         ("Status", status, "what's installed / running"),
         ("Start / Stop / Restart", restart, "control the bot"),
         ("Settings", settings, "change tokens, model, timeout…"),
-        ("Contribute to the pool", contribute, "share part of your AI box"),
+        ("Contribute to the pool", contribute, "join / update / leave the community pool"),
+        ("Pool status", pool_status, "your contributions: requests served, share, health"),
         ("Local web panel", localweb, "turn the localhost settings page on/off"),
         ("Update", update, "pull the latest bot code"),
         ("Uninstall", uninstall, "remove everything, nothing left behind"),
@@ -943,11 +1062,12 @@ def menu_plain():
         ("2", "Status", status, "what's installed / running"),
         ("3", "Start / Stop / Restart", restart, "control the bot"),
         ("4", "Settings", settings, "change tokens, model, timeout…"),
-        ("5", "Contribute to the pool", contribute, "share part of your AI box"),
-        ("6", "Local web panel", localweb, "turn the localhost settings page on/off"),
-        ("7", "Update", update, "pull the latest bot code"),
-        ("8", "Uninstall", uninstall, "remove everything, nothing left behind"),
-        ("9", "About / help", help_text, "how everything works"),
+        ("5", "Contribute to the pool", contribute, "join / update / leave the community pool"),
+        ("6", "Pool status", pool_status, "your contributions: requests served, share, health"),
+        ("7", "Local web panel", localweb, "turn the localhost settings page on/off"),
+        ("8", "Update", update, "pull the latest bot code"),
+        ("9", "Uninstall", uninstall, "remove everything, nothing left behind"),
+        ("10", "About / help", help_text, "how everything works"),
         ("0", "Quit", None, "close this menu"),
     ]
     for num, name, _fn, desc in menu_actions:
@@ -980,7 +1100,7 @@ def main():
                                      add_help=False)
     parser.add_argument("action", nargs="?", default=None,
                         help="status | start | stop | restart | update | uninstall | "
-                             "contribute | settings | localweb | help | about")
+                             "contribute | pool | settings | localweb | help | about")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
     if args.help or args.action in ("help", "about"):
