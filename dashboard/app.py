@@ -27,6 +27,7 @@ import urllib.request
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -60,7 +61,28 @@ INVITE_PERMS = "1101994781766"  # same permission set the bot uses everywhere
 HOST_ADMIN_IDS = {i.strip() for i in os.environ.get("HOST_ADMIN_IDS", "").split(",") if i.strip()}
 
 app = FastAPI(title="Quaestio admin")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE, "static")), name="static")
+
+
+@app.get("/api/health")
+async def api_health():
+    """Readiness probe for uptime checks (no auth): db + ollama reachability."""
+    out = {"ok": True, "db": False, "ollama": False}
+    try:
+        conn = db()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        out["db"] = True
+    except Exception:
+        out["ok"] = False
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            out["ollama"] = r.status_code == 200
+    except Exception:
+        pass
+    return out
 
 # Login sessions keyed by a random bearer token (no cookies — Safari-safe OAuth).
 # In-memory: a dashboard restart signs everyone out, which is fine for a panel.
@@ -173,6 +195,19 @@ def get_cfg(guild_id, key, default=None):
     if row is None:
         return default
     return qconfig.maybe_decrypt(key, row["value"])
+
+
+def get_all_cfg(guild_id, keys, defaults=None):
+    """Batch-fetch config keys in one SQLite round-trip (fixes N+1 on settings load)."""
+    defaults = defaults or {}
+    conn = db()
+    rows = conn.execute(
+        f"SELECT key, value FROM config WHERE guild_id=? AND key IN ({','.join('?' * len(keys))})",
+        [str(guild_id), *keys],
+    ).fetchall()
+    conn.close()
+    found = {r["key"]: qconfig.maybe_decrypt(r["key"], r["value"]) for r in rows}
+    return {k: found.get(k, defaults.get(k)) for k in keys}
 
 
 def set_cfg(guild_id, key, value):
@@ -495,21 +530,35 @@ def usage_calls(guild_id, window: int = 6) -> int:
         conn.close()
 
 
-def effective_ai_limits(guild_id):
+def effective_ai_limits(guild_id, _pre=None):
     """Effective quota/memory/endpoint after host caps — mirrors the bot's merge."""
-    managed = get_cfg("host", "host_mode", "managed") != "decentral"
-    source = (get_cfg(guild_id, "ai_source", "shared") or "shared").strip().lower()
-    window = max(1, int(get_cfg(guild_id, "ai_window", "6") or 6))
-    host_mem_raw = get_cfg("host", "ai_memory", "")
-    host_quota_raw = get_cfg("host", "ai_quota", "")
-    host_mem = int(host_mem_raw) if str(host_mem_raw).strip() else 0
-    host_quota = int(host_quota_raw) if str(host_quota_raw).strip() else 0
-    mem_raw = get_cfg(guild_id, "ai_memory", "")
-    quota_raw = get_cfg(guild_id, "ai_quota", "")
-    memory = int(mem_raw) if str(mem_raw).strip() else (host_mem or 4)
-    quota = int(quota_raw) if str(quota_raw).strip() else host_quota
+    _pre = _pre or {}
+
+    def _g(gid, key, default=""):
+        ck = f"{gid}:{key}"
+        if ck in _pre:
+            return _pre[ck]
+        return get_cfg(gid, key, default)
+
+    def _to_int(v, default=0):
+        try:
+            return int(str(v).strip()) if str(v).strip() else default
+        except (ValueError, TypeError):
+            return default
+
+    managed = _g("host", "host_mode", "managed") != "decentral"
+    source = (_g(guild_id, "ai_source", "shared") or "shared").strip().lower()
+    window = max(1, _to_int(_g(guild_id, "ai_window", "6") or 6, 6))
+    host_mem_raw = _g("host", "ai_memory", "")
+    host_quota_raw = _g("host", "ai_quota", "")
+    host_mem = _to_int(host_mem_raw)
+    host_quota = _to_int(host_quota_raw)
+    mem_raw = _g(guild_id, "ai_memory", "")
+    quota_raw = _g(guild_id, "ai_quota", "")
+    memory = _to_int(mem_raw, host_mem or 4)
+    quota = _to_int(quota_raw, host_quota)
     if source == "self":
-        endpoint = (get_cfg(guild_id, "ai_endpoint", "") or "http://127.0.0.1:11434").strip()
+        endpoint = (_g(guild_id, "ai_endpoint", "") or "http://127.0.0.1:11434").strip()
     else:
         endpoint = ""  # shared host box is hidden from server admins
         if managed:
@@ -525,15 +574,24 @@ def effective_ai_limits(guild_id):
 @app.get("/api/guilds/{guild_id}/settings")
 async def api_get_settings(request: Request, guild_id: int):
     require_admin_guild(request, guild_id)
-    settings = {k: get_cfg(guild_id, k, "") for k in SETTING_KEYS}
-    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    # One round-trip for guild keys + one for host keys (was ~45 sequential opens).
+    guild_vals = get_all_cfg(guild_id, SETTING_KEYS, {k: "" for k in SETTING_KEYS})
+    host_vals = get_all_cfg("host", ["host_mode", "ai_memory", "ai_quota", "ai_model"],
+                            {"host_mode": "managed", "ai_memory": "", "ai_quota": "", "ai_model": ""})
+    settings = dict(guild_vals)
+    managed = host_vals.get("host_mode", "managed") != "decentral"
     settings["host_mode"] = "managed" if managed else "decentral"
-    settings["host_memory"] = get_cfg("host", "ai_memory", "")
-    settings["host_quota"] = get_cfg("host", "ai_quota", "")
-    settings["host_model"] = get_cfg("host", "ai_model", "")
+    settings["host_memory"] = host_vals.get("ai_memory", "")
+    settings["host_quota"] = host_vals.get("ai_quota", "")
+    settings["host_model"] = host_vals.get("ai_model", "")
     # Never reveal the host's private AI box URL to server admins.
     settings["host_endpoint"] = ""
-    limits = effective_ai_limits(guild_id)
+    _pre = {f"{guild_id}:{k}": v for k, v in guild_vals.items()}
+    _pre.update({f"host:{k}": v for k, v in
+                 [("host_mode", host_vals.get("host_mode", "managed")),
+                  ("ai_memory", host_vals.get("ai_memory", "")),
+                  ("ai_quota", host_vals.get("ai_quota", ""))]})
+    limits = effective_ai_limits(guild_id, _pre)
     settings["ai_source"] = limits["source"]
     settings["ai_window"] = str(limits["window"])
     settings["quota_effective"] = limits["quota"]

@@ -26,7 +26,7 @@ async function api(path, opts = {}) {
     credentials: "same-origin",
     ...opts,
   });
-  if (res.status === 401) { show("login"); return null; }
+  if (res.status === 401) { show("login-view"); throw new Error("Please sign in."); }
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const msg = data && data.error ? data.error : `Request failed (${res.status})`;
@@ -36,10 +36,18 @@ async function api(path, opts = {}) {
   return data;
 }
 
+function postJSON(path, body) {
+  return api(path, { method: "POST", body: JSON.stringify(body || {}) });
+}
+
 function grabTokenFromHash() {
   const m = location.hash.match(/token=([^&]+)/);
   if (m) {
-    sessionStorage.setItem(TOKEN_KEY, m[1]);
+    try {
+      sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1]));
+    } catch {
+      sessionStorage.setItem(TOKEN_KEY, m[1]);
+    }
     history.replaceState(null, "", location.pathname + location.search);
   }
 }
@@ -56,19 +64,29 @@ function showLoginError() {
   const p = new URLSearchParams(location.search);
   if (p.get("error") === "login") $("#login-error").textContent = "Login failed — please try again.";
   else if (p.get("error") === "needadmin") $("#login-error").textContent = "You need to be in at least one Discord server to use the panel.";
+  if (p.get("error")) {
+    const url = new URL(location.href);
+    url.searchParams.delete("error");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
 }
 
 function toast(msg, isErr = false) {
   const t = $("#toast");
+  if (!t) return;
   t.textContent = msg;
   t.classList.toggle("err", !!isErr);
   t.classList.toggle("show", true);
+  t.setAttribute("aria-live", isErr ? "assertive" : "polite");
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove("show"), 3200);
 }
 
 function show(view) {
-  ["login-view", "picker-view", "settings-view", "selfhost-view", "host-view"].forEach((id) => $("#" + id).classList.toggle("hidden", id !== view));
+  ["login-view", "picker-view", "settings-view", "selfhost-view", "host-view"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("hidden", id !== view);
+  });
   $$("#nav-links a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
 }
 
@@ -358,19 +376,21 @@ function emojiSearch(query) {
   const q = (query || "").trim().toLowerCase();
   if (!q) {
     const counts = {};
-    QUAESTIO_EMOJI.forEach((x) => (counts[x.c] = (counts[x.c] || 0) + 1));
-    return { list: QUAESTIO_EMOJI, counts };
+    (typeof QUAESTIO_EMOJI !== "undefined" ? QUAESTIO_EMOJI : []).forEach((x) => (counts[x.c] = (counts[x.c] || 0) + 1));
+    return { list: (typeof QUAESTIO_EMOJI !== "undefined" ? QUAESTIO_EMOJI : []), counts, query: "" };
   }
   const words = q.split(/\s+/);
-  const list = QUAESTIO_EMOJI.filter((x) =>
+  const src = typeof QUAESTIO_EMOJI !== "undefined" ? QUAESTIO_EMOJI : [];
+  const list = src.filter((x) =>
     words.every(
       (w) =>
-        x.c.includes(w) ||
-        (x.k || []).some((kw) => kw.includes(w)) ||
-        (x.t || "").includes(w)
+        (x.e || "").includes(w) ||
+        (x.c || "").toLowerCase().includes(w) ||
+        (x.k || []).some((kw) => (kw || "").toLowerCase().includes(w)) ||
+        (x.t || "").toLowerCase().includes(w)
     )
   );
-  return { list };
+  return { list, query: q };
 }
 
 const EMOJI_GROUP_LABELS = {
@@ -945,27 +965,27 @@ async function renderHost() {
         ev.preventDefault();
         const endpoint = $("#pool-endpoint").value.trim();
         if (!endpoint) { toast("✗ Endpoint is required"); return; }
-        api("/api/host/pool", { endpoint, model: s.ai_model || "", share: $("#pool-share").value })
+        postJSON("/api/host/pool", { endpoint, model: s.ai_model || "", share: $("#pool-share").value })
           .then(() => { toast("✓ Contributor added to the pool"); renderHost(); })
           .catch((e) => toast("✗ " + e));
       });
     }
     $$(".pool-share-edit").forEach((sel) =>
       sel.addEventListener("change", () =>
-        api(`/api/host/pool/${sel.dataset.id}`, { share: sel.value })
+        postJSON(`/api/host/pool/${sel.dataset.id}`, { share: sel.value })
           .then(renderHost).catch(() => toast("✗ Couldn't update share"))
       )
     );
     $$(".pool-enable").forEach((cb) =>
       cb.addEventListener("change", () =>
-        api(`/api/host/pool/${cb.dataset.id}`, { enabled: cb.checked })
+        postJSON(`/api/host/pool/${cb.dataset.id}`, { enabled: cb.checked })
           .then(renderHost).catch(() => toast("✗ Couldn't update contributor"))
       )
     );
     $$("[data-rem]").forEach((btn) =>
       btn.addEventListener("click", () => {
         if (!confirm("Remove this contributor from the pool?")) return;
-        api(`/api/host/pool/${btn.dataset.rem}`, null, "DELETE")
+        api(`/api/host/pool/${btn.dataset.rem}`, { method: "DELETE" })
           .then(renderHost).catch(() => toast("✗ Couldn't remove"));
       })
     );
@@ -1014,11 +1034,19 @@ function fmtBytes(n) {
 
 /* ---------- events ---------- */
 function wireEvents() {
-  $("#back-btn").addEventListener("click", (e) => { e.preventDefault(); renderPicker(); show("picker-view"); });
+  const navToggle = $("#nav-toggle");
+  if (navToggle) navToggle.addEventListener("click", () => {
+    const nav = document.querySelector(".nav");
+    if (nav) nav.classList.toggle("open");
+    navToggle.setAttribute("aria-expanded", nav && nav.classList.contains("open") ? "true" : "false");
+  });
+  const backBtn = $("#back-btn");
+  if (backBtn) backBtn.addEventListener("click", (e) => { e.preventDefault(); renderPicker(); show("picker-view"); });
   const shBack = $("#selfhost-back-btn");
   if (shBack) shBack.addEventListener("click", (e) => { e.preventDefault(); renderPicker(); show("picker-view"); });
 
-  $("#guild-search").addEventListener("input", drawPicker);
+  const guildSearch = $("#guild-search");
+  if (guildSearch) guildSearch.addEventListener("input", drawPicker);
 
   $$("#os-seg .seg-btn").forEach((b) =>
     b.addEventListener("click", () => { currentOs = b.dataset.os; applyOsTab(b.dataset.os); })
@@ -1066,8 +1094,13 @@ function wireEvents() {
     });
   }
 
-  $("#refresh-models").addEventListener("click", () => populateModels("#ai_model", activeGuild.id, "ai_model", $("#ai_model").value));
-  $("#welcome_message").addEventListener("input", renderWelcomePreview);
+  const refreshBtn = $("#refresh-models");
+  if (refreshBtn) refreshBtn.addEventListener("click", () => {
+    const sel = $("#ai_model");
+    if (sel && activeGuild) populateModels("#ai_model", activeGuild.id, "ai_model", sel.value);
+  });
+  const welcomeMsg = $("#welcome_message");
+  if (welcomeMsg) welcomeMsg.addEventListener("input", renderWelcomePreview);
 
   /* Name pickers: "Custom ID…" reveals the raw input */
   $$("select[id$='_ref']").forEach((sel) =>
@@ -1078,19 +1111,25 @@ function wireEvents() {
   );
 
   /* Creativity slider → value readout */
-  $("#ai_temperature").addEventListener("input", () => {
-    $("#ai_temperature_val").textContent = $("#ai_temperature").value;
+  const tempSlider = $("#ai_temperature");
+  const tempVal = $("#ai_temperature_val");
+  if (tempSlider && tempVal) tempSlider.addEventListener("input", () => {
+    tempVal.textContent = tempSlider.value;
   });
 
   /* AI box source toggles the endpoint + pool contribution */
-  $("#ai_source").addEventListener("change", () => applySourceUI($("#ai_source").value, {}));
+  const aiSource = $("#ai_source");
+  if (aiSource) aiSource.addEventListener("change", () => applySourceUI(aiSource.value, {}));
 
-  $("#ai_conv").addEventListener("change", () => {
-    $("#ai-conv-minutes-wrap").hidden = !$("#ai_conv").checked;
+  const aiConv = $("#ai_conv");
+  const convWrap = $("#ai-conv-minutes-wrap");
+  if (aiConv && convWrap) aiConv.addEventListener("change", () => {
+    convWrap.hidden = !aiConv.checked;
   });
 
   /* Unsaved-changes indicator: any edit marks the bar, saves clear it */
   const sv = $("#settings-view");
+  if (sv) {
   sv.addEventListener("input", (e) => { if (e.target.closest("#preset-manager")) return; if (e.target.closest("input, select, textarea")) markDirty(); });
   sv.addEventListener("change", (e) => { if (e.target.closest("#preset-manager")) return; if (e.target.closest("input, select, textarea")) markDirty(); });
   sv.addEventListener("click", (e) => { if (e.target.closest("button.chip")) markDirty(); });
@@ -1252,6 +1291,7 @@ function wireEvents() {
       } catch { /* toast already shown */ }
     });
   });
+  } // end if (sv)
 }
 
 /* ---------- init ---------- */

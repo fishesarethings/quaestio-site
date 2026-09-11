@@ -35,7 +35,24 @@ except Exception:
     Button = Footer = Header = Input = ListItem = ListView = Static = None
 
 HOME = os.path.expanduser("~")
-INSTALL_DIR = os.environ.get("QUAESTIO_DIR", os.path.join(HOME, "quaestio"))
+_INSTALL_DEFAULT = os.path.join(HOME, "quaestio")
+_INSTALL_LEGACY = os.path.join(HOME, "Downloads", "quaestio")
+
+
+def _resolve_install_dir():
+    """Default ~/quaestio, with fallback to the old ~/Downloads/quaestio path
+    so installs from before the path fix keep working."""
+    env = os.environ.get("QUAESTIO_DIR")
+    if env:
+        return env
+    if os.path.isdir(os.path.join(_INSTALL_DEFAULT, "bot")):
+        return _INSTALL_DEFAULT
+    if os.path.isdir(os.path.join(_INSTALL_LEGACY, "bot")):
+        return _INSTALL_LEGACY
+    return _INSTALL_DEFAULT
+
+
+INSTALL_DIR = os.environ.get("QUAESTIO_DIR", _resolve_install_dir())
 BOT_DIR = os.path.join(INSTALL_DIR, "bot")
 VENV = os.path.join(INSTALL_DIR, ".venv")
 def _default_keyfile_path() -> str:

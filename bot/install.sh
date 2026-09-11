@@ -19,7 +19,7 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-INSTALL_DIR="${QUAESTIO_DIR:-$HOME/Downloads/quaestio}"
+INSTALL_DIR="${QUAESTIO_DIR:-$HOME/quaestio}"
 MODEL="${QUAESTIO_MODEL:-qwen2.5:1.5b}"
 # Pre-set this to host the AI on another computer, e.g.:
 #   OLLAMA_BASE_URL=http://192.168.1.50:11434 curl -fsSL https://quaestio.online/bot/install.sh | bash
@@ -57,15 +57,17 @@ keyfile() {
   fi
   if [[ ! -f "$keyfile" ]]; then
     say "Creating encryption key at $keyfile"$([[ "$(uname -s)" == "Linux" ]] && echo " (needs sudo on Linux)").
+    # Prefer the venv python (cryptography is guaranteed there after pip
+    # install) so we only ever ask for sudo once on Linux.
+    local genpy="$VENV/bin/python"
+    [[ -x "$genpy" ]] || genpy="python3"
     if [[ "$(uname -s)" == "Linux" ]]; then
       sudo mkdir -p "$(dirname "$keyfile")"
-      sudo python3 -c "from cryptography.fernet import Fernet; import sys; open('$keyfile','wb').write(Fernet.generate_key())" 2>/dev/null \
-        || sudo "$VENV/bin/python" -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())"
+      sudo "$genpy" -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())"
       sudo chmod 600 "$keyfile"
     else
       mkdir -p "$(dirname "$keyfile")"
-      python3 -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())" 2>/dev/null \
-        || "$VENV/bin/python" -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())"
+      "$genpy" -c "from cryptography.fernet import Fernet; open('$keyfile','wb').write(Fernet.generate_key())"
       chmod 600 "$keyfile"
     fi
     say "Keyfile created."
@@ -76,8 +78,13 @@ if ! need_python; then
   warn "Python ${PY_MIN[0]}.${PY_MIN[1]}+ not found."
   if [[ "$(uname -s)" == "Darwin" ]]; then
     if command -v brew >/dev/null 2>&1; then
-      say "Installing Python via Homebrew — this may take a few minutes."
+      say "Installing Python via Homebrew — this may take a few minutes (~150 MB)."
       brew install python@3.12
+      # Brew links python3 into /opt/homebrew/bin (Apple Silicon) or
+      # /usr/local/bin (Intel) — pick it up in THIS shell so the rest of
+      # the installer sees it without opening a new terminal.
+      export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+      hash -r 2>/dev/null || true
     else
       die "Install Homebrew from https://brew.sh, then re-run (or run: brew install python@3.12)."
     fi
@@ -233,13 +240,13 @@ if ! command -v ollama >/dev/null 2>&1; then
 fi
 if command -v ollama >/dev/null 2>&1; then
   if ! ollama list 2>/dev/null | grep -qi "$MODEL"; then
-    say "Pulling a small smart AI model ($MODEL, ~1 GB) — first run takes a minute or two."
+    say "Pulling a small smart AI model ($MODEL, ~1 GB download) — first run takes a minute or two."
     ollama pull "$MODEL" || warn "Model pull failed; you can run 'ollama pull $MODEL' later."
   else
     say "Model '$MODEL' already present."
   fi
 else
-  warn "Ollama not detected — the AI commands will be offline until you install it."
+  warn "Ollama not detected — the AI commands will be offline until you install it (~500 MB + ~1 GB model)."
 fi
 
 # --- 5. Config (.env) — the Discord token is always optional -------------------
@@ -270,6 +277,9 @@ else
 fi
 
 # --- 6. Service / launch -------------------------------------------------------
+# Pool-only boxes (no BOT_TOKEN) get the unit installed but NOT started —
+# the bot idles without a token, so starting it would just sit idle.
+has_token() { grep -q '^BOT_TOKEN=.\+' "$ENV_FILE" 2>/dev/null; }
 if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
   SERVICE=/etc/systemd/system/quaestio.service
   if [[ ! -f "$SERVICE" ]]; then
@@ -292,11 +302,22 @@ User=$USER
 WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
-    sudo systemctl enable --now quaestio.service
-    say "Quaestio is running as a service!  Status: systemctl status quaestio  Logs: journalctl -u quaestio -f"
+    if has_token; then
+      sudo systemctl enable --now quaestio.service
+      say "Quaestio is running as a service!  Status: systemctl status quaestio  Logs: journalctl -u quaestio -f"
+    else
+      sudo systemctl enable quaestio.service
+      warn "No bot token — service installed but not started (pool-only mode)."
+      say "Add one later with:  quaestio settings   then:  sudo systemctl restart quaestio"
+    fi
   else
-    say "Systemd service already installed — restarting it."
-    sudo systemctl restart quaestio.service
+    if has_token; then
+      say "Systemd service already installed — restarting it."
+      sudo systemctl restart quaestio.service
+    else
+      say "Systemd service already installed — token still missing, leaving it stopped."
+      say "Add one with:  quaestio settings   then:  sudo systemctl restart quaestio"
+    fi
   fi
 else
   RUN="$INSTALL_DIR/run-quaestio.sh"

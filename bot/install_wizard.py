@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 
-INSTALL_DIR = os.environ.get("QUAESTIO_INSTALL_DIR") or os.environ.get("QUAESTIO_DIR") or os.path.expanduser("~/Downloads/quaestio")
+INSTALL_DIR = os.environ.get("QUAESTIO_INSTALL_DIR") or os.environ.get("QUAESTIO_DIR") or os.path.expanduser("~/quaestio")
 BOT_DIR = os.path.join(INSTALL_DIR, "bot")
 DASH_DIR = os.path.join(INSTALL_DIR, "dashboard")
 VENV = os.path.join(INSTALL_DIR, ".venv")
@@ -328,7 +328,7 @@ class Location(_NavScreen):
                 "  selector on macOS; Linux uses zenity/kdialog if installed).",
                 classes="sub")
             yield Static("Install folder:", classes="lbl")
-            yield Input(value=cfg.install_dir, id="dir", placeholder="~/Downloads/quaestio")
+            yield Input(value=cfg.install_dir, id="dir", placeholder="~/quaestio")
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
                 yield Button("Browse…", id="browse")
@@ -606,7 +606,19 @@ exec "{PY}" "{os.path.join(cfg.bot_dir, 'bot.py')}"
         return f"run script ready (autostart off): {run_script}"
     if not is_linux_systemd():
         return f"run script ready: {run_script}"
+    # Pool-only boxes (no token) get the unit installed but NOT started —
+    # the bot idles without a token, so auto-starting would just sit idle.
     envf = os.path.join(cfg.bot_dir, ".env")
+    has_token = bool((cfg.token or "").strip())
+    if not has_token:
+        try:
+            with open(envf) as f:
+                for line in f:
+                    if line.strip().startswith("BOT_TOKEN=") and len(line.strip()) > 10:
+                        has_token = True
+                        break
+        except OSError:
+            pass
     unit = f"""[Unit]
 Description=Quaestio community host
 After=network-online.target ollama.service
@@ -627,8 +639,11 @@ WantedBy=multi-user.target
         f.write(unit)
     _run(["sudo", "cp", "/tmp/qfsvc", SERVICE], silent=True)
     _run(["sudo", "systemctl", "daemon-reload"], silent=True)
-    _run(["sudo", "systemctl", "enable", "--now", "quaestio.service"], silent=True)
-    return "systemd service installed & started"
+    if has_token:
+        _run(["sudo", "systemctl", "enable", "--now", "quaestio.service"], silent=True)
+        return "systemd service installed & started"
+    _run(["sudo", "systemctl", "enable", "quaestio.service"], silent=True)
+    return "systemd service installed (pool-only: not started, no token yet)"
 
 
 def _step_autostart():

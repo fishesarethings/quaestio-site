@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=18">
+<link rel="stylesheet" href="/static/style.css?v=19">
 </head>
 <body>
 
@@ -27,6 +27,7 @@
     <span>Quaestio</span>
     <em>admin</em>
   </a>
+  <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">☰</button>
   <nav class="links" id="nav-links"></nav>
   <a class="btn btn-ghost btn-feedback" href="https://github.com/fishesarethings/quaestio-site/issues" target="_blank" rel="noopener" title="Share feedback or report a bug">💬 Feedback</a>
   <div id="nav-user"></div>
@@ -857,8 +858,8 @@ uvicorn app:app --host 127.0.0.1 --port 8900</code></pre>
   </section>
 </main>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/emoji-data.js?v=1"></script>
-<script src="/static/app.js?v=18"></script>
+<script src="/static/app.js?v=19"></script>
 </body>
 </html>

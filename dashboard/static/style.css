@@ -814,3 +814,47 @@ input:disabled { opacity: 0.55; cursor: not-allowed; }
 .mod-cmds code { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border-strong, #2a2a2a); border-radius: 6px; padding: 2px 7px; font-size: 0.8rem; color: var(--text); }
 
 .btn-feedback { margin-left: 12px; }
+
+/* ============================= Polish pass (perf + mobile + a11y) ============================= */
+body { line-height: 1.6; }
+h2 { font-size: clamp(24px, 3vw, 30px); }
+.card { padding: 20px; }
+.field-group { margin-top: 16px; }
+
+/* Only interactive cards lift — static panels stay calm on scroll */
+.card:hover { box-shadow: var(--shadow); }
+.guild-card:hover, .preset-tile:hover, .btn:hover { transform: translateY(-1px); }
+
+/* Skeleton shimmer for async lists */
+.skel { position: relative; overflow: hidden; background: rgba(255,255,255,.06); border-radius: 10px; min-height: 56px; }
+.skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.09) 50%, transparent 80%); animation: skel 1.2s infinite; }
+@keyframes skel { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* Empty states: centered icon + title + CTA */
+.empty { text-align: center; padding: 28px 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius); color: var(--muted); }
+.empty .empty-ico { font-size: 28px; display: block; margin-bottom: 8px; }
+.empty .btn { margin-top: 12px; }
+
+/* Button hierarchy: quiet secondary actions */
+.btn-sm { padding: 6px 12px; font-size: .82rem; }
+.btn-ghost, .btn-danger-ghost { opacity: .92; }
+
+/* Visible focus for keyboard users */
+:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; border-radius: 8px; }
+
+/* Mobile nav: hamburger dropdown (JS toggles .open on .nav) */
+.nav-toggle { display: none; background: none; border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 1.1rem; padding: 6px 10px; cursor: pointer; }
+@media (max-width: 640px) {
+  .blob { display: none; }
+  .nav-toggle { display: inline-block; }
+  #nav-links { display: none; position: absolute; top: 100%; left: 12px; right: 12px; flex-direction: column; gap: 4px; background: var(--panel-solid); border: 1px solid var(--border-strong); border-radius: 14px; padding: 10px; z-index: 60; }
+  .nav.open #nav-links { display: flex; }
+  .pool-add { grid-template-columns: 1fr !important; }
+  .btn-feedback { display: none; }
+}
+
+/* Calm backdrop on small screens + no backdrop-filter on toasts */
+.toast { backdrop-filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  .skel::after { animation: none; }
+}
