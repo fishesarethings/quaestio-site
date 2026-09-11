@@ -406,14 +406,18 @@ def flag_on(guild_id, key, default="1") -> bool:
 # Ollama AI (local or remote — the URL decides; Windows is fine on the far end)
 # ---------------------------------------------------------------------------
 
-async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float = 0.6, max_tokens: int = 150, top_p: float = 0.9, repeat_penalty: float = 1.15, stop: list = None, system: str = "") -> str:
+async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float = 0.6, max_tokens: int = 150, top_p: float = 0.9, repeat_penalty: float = 1.15, stop: list = None, system: str = "", timeout: int = 0) -> str:
     body = {"model": model, "prompt": prompt, "stream": False,
+            "keep_alive": "30m",
             "options": {"temperature": float(temperature), "num_predict": int(max_tokens),
                         "top_p": float(top_p), "repeat_penalty": float(repeat_penalty)},
             "stop": stop or ["\nbot:", "\nmember:", "\nYou reply:"]}
     if system:
         body["system"] = system
     payload = json.dumps(body).encode()
+    # Per-attempt timeout so one hanging box fails over fast instead of
+    # blocking the whole chain for the full OLLAMA_TIMEOUT.
+    attempt_timeout = timeout or OLLAMA_TIMEOUT
 
     def _request():
         req = urllib.request.Request(
@@ -421,7 +425,7 @@ async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float 
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=attempt_timeout) as resp:
             return json.loads(resp.read().decode())
 
     try:
@@ -466,17 +470,25 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
     if asker:
         stop.append(f"\n{asker}:")
     last_err = None
-    for ep in chain:
+    for i, ep in enumerate(chain):
         if not ep:
             continue
+        t0 = time.time()
+        # Primary gets the full budget (slow CPU boxes need it); fallbacks
+        # fail fast so one hanging host can't stall the whole reply.
+        budget = OLLAMA_TIMEOUT if i == 0 else min(45, OLLAMA_TIMEOUT)
         try:
             answer = await ask_ollama(ep, cfg["model"], prompt,
                                       params.get("temperature", temperature),
                                       params.get("num_predict", max_tokens),
                                       params.get("top_p", 0.9),
                                       params.get("repeat_penalty", 1.15),
-                                      stop=stop, system=system or cfg.get("persona_system", ""))
+                                      stop=stop, system=system or cfg.get("persona_system", ""),
+                                      timeout=budget)
             pool_record(ep, ok=True)
+            dt = time.time() - t0
+            if dt > 60:
+                print(f"quaestio: slow AI reply ({dt:.0f}s) model={cfg['model']}", flush=True)
             return answer
         except ConnectionError as exc:
             pool_record(ep, ok=False)
@@ -2496,7 +2508,6 @@ def _remember_reply(interaction, answer, prompt):
 async def ask(interaction: discord.Interaction, prompt: str):
     if interaction.guild is None:
         await interaction.response.defer(thinking=True)
-        await interaction.followup.send("⏳ thinking…", ephemeral=True)
         try:
             await dm_chat(interaction.channel, prompt[:400], host_cfg(),
                           mention=interaction.user.mention,
@@ -2533,9 +2544,9 @@ async def ask(interaction: discord.Interaction, prompt: str):
         )
         return
     await interaction.response.defer(thinking=True)
-    # Resolve the deferred interaction right away so Discord never shows a
-    # stuck "thinking…"; the real reply still streams into the channel below.
-    await interaction.followup.send("⏳ thinking…", ephemeral=True)
+    # NOTE: no ephemeral "thinking…" followup — defer already shows thinking
+    # in the client and the channel typing indicator covers the wait. The old
+    # double indicator (message + typing) was just noise.
 
     try:
         context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])

@@ -1027,6 +1027,7 @@ async def api_set_settings(request: Request, guild_id: int):
 # ---------------------------------------------------------------------------
 
 # Mirrored titles + emoji so the panel can render tiles without importing the bot.
+# Prompts mirror bot.py PERSONALITIES (rich voices, not one-liners).
 PRESET_BUILTINS = {
     "personality": {
         "friendly": "Friendly",
@@ -1034,6 +1035,7 @@ PRESET_BUILTINS = {
         "sarcastic": "Sarcastic wit",
         "pirate": "Pirate",
         "professional": "Professional",
+        "feral": "Feral gremlin",
     },
     "character": {
         "Jeff from Mars": "Jeff from Mars",
@@ -1046,7 +1048,7 @@ PRESET_BUILTINS = {
 PRESET_EMOJI = {
     "personality": {
         "friendly": "🙂", "sage": "🧘", "sarcastic": "😏",
-        "pirate": "🏴‍☠️", "professional": "💼",
+        "pirate": "🏴‍☠️", "professional": "💼", "feral": "👹",
     },
     "character": {
         "Jeff from Mars": "🫘", "Grumpy tavern keeper": "🍺",
@@ -1061,6 +1063,7 @@ PRESET_DESCRIPTIONS = {
         "sarcastic": "Playful dry wit, never mean.",
         "pirate": "Nautical cheer — arr, matey.",
         "professional": "Crisp and to the point.",
+        "feral": "Chaotic-but-kind gremlin energy.",
     },
     "character": {
         "Jeff from Mars": "A friendly alien obsessed with beans.",
@@ -1072,11 +1075,12 @@ PRESET_DESCRIPTIONS = {
 
 PRESET_PROMPTS = {
     "personality": {
-        "friendly": "Keep the tone friendly, warm and upbeat.",
-        "sage": "Keep the tone wise, calm, measured and to the point.",
-        "sarcastic": "Keep a playful, sarcastic edge — never mean.",
-        "pirate": "Lace your replies with nautical cheer (arr, ye, matey) but stay on topic.",
-        "professional": "Keep it crisp, precise and to the point.",
+        "friendly": "You are Quaestio, a warm upbeat Discord buddy. Short textspeak-free replies, 1-2 sentences, max ~40 words.",
+        "sage": "You are Quaestio the sage: calm, measured, 1-3 sentences, max ~50 words. Most useful point first.",
+        "sarcastic": "You are Quaestio with a dry smirk: one witty jab max, then genuinely helpful in 1-2 sentences.",
+        "pirate": "You are Quaestio the cheerful pirate: ONE nautical word per reply (arr OR matey OR ahoy), 1-2 sentences.",
+        "professional": "You are Quaestio, crisp and precise: 1-3 sentences or up to 3 short bullets, max ~60 words. No filler.",
+        "feral": "You are Quaestio the chaotic-but-kind gremlin: lowercase energy, 1-2 sentences, max ~35 words.",
     },
     "character": {
         "Jeff from Mars": (
