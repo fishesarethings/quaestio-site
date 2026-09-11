@@ -716,6 +716,7 @@ def _step_command():
 exec "{PY}" "{os.path.join(cfg.bot_dir, 'quaestio.py')}" "$@"
 """)
     os.chmod(launcher, 0o755)
+    link = None
     for d in (os.path.expanduser("~/.local/bin"), os.path.expanduser("~/bin")):
         try:
             os.makedirs(d, exist_ok=True)
@@ -724,10 +725,34 @@ exec "{PY}" "{os.path.join(cfg.bot_dir, 'quaestio.py')}" "$@"
                 if os.path.exists(link):
                     os.remove(link)
                 os.symlink(launcher, link)
-                return f"`quaestio` command ready ({link})"
+                break
+            link = os.path.join(d, "quaestio")
+            break
         except Exception:
             continue
-    return "`quaestio` command ready (add ~/.local/bin to PATH)"
+    if link is None:
+        return "`quaestio` command ready (add ~/.local/bin to PATH)"
+    # Make sure the link dir is actually on PATH (macOS default shells lack
+    # ~/.local/bin — the #1 install complaint). Append once to startup files
+    # and export it here so `quaestio` works immediately.
+    bindir = os.path.dirname(link)
+    if bindir not in os.environ.get("PATH", "").split(os.pathsep):
+        line = f'export PATH="{bindir}:$PATH" # quaestio\n'
+        for rc in (os.path.expanduser("~/.zshrc"), os.path.expanduser("~/.bashrc")):
+            try:
+                existing = ""
+                if os.path.exists(rc):
+                    with open(rc) as f:
+                        existing = f.read()
+                if line.strip() in existing:
+                    continue
+                with open(rc, "a") as f:
+                    f.write("\n" + line)
+            except Exception:
+                pass
+        os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+        return f"`quaestio` command ready ({link}) — PATH updated, works now and in new terminals"
+    return f"`quaestio` command ready ({link})"
 
 
 def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, share: int) -> str:
@@ -885,8 +910,24 @@ def main():
         if result == "done":
             print()
             if cfg.pool:
-                print("[quaestio] Thanks for joining the community pool!")
-                print("[quaestio] See your contributions anytime with:  quaestio pool")
+                # Only celebrate a join that actually happened — the old code
+                # thanked everyone even when broker registration failed, then
+                # `quaestio pool` said "not in the pool". Check the creds.
+                joined = False
+                try:
+                    with open(os.path.join(cfg.bot_dir, ".env")) as f:
+                        for ln in f:
+                            if ln.strip().startswith("POOL_NODE_SECRET=") and len(ln.strip()) > 17:
+                                joined = True
+                                break
+                except OSError:
+                    pass
+                if joined:
+                    print("[quaestio] Thanks for joining the community pool!")
+                    print("[quaestio] See your contributions anytime with:  quaestio pool")
+                else:
+                    print("[quaestio] Pool join didn't complete (broker unreachable?).")
+                    print("[quaestio] Retry anytime with:  quaestio contribute")
             else:
                 print("[quaestio] Thanks! Everything is in place.")
             print("[quaestio] Manage it anytime from any folder:  quaestio   (or:  quaestio help)")

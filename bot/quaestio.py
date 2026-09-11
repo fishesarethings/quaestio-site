@@ -294,10 +294,20 @@ def install_menu():
     say("Fetching the latest installer wizard…")
     base = os.environ.get("QUAESTIO_SRC",
                           "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
-    try:
-        urllib.request.urlretrieve(f"{base}/install_wizard.py", wizard)
-    except Exception:
-        boom("Couldn't fetch the wizard. Run it directly instead:\n"
+    fetched = False
+    # curl first (handles proxies/certs better on some Macs), then urllib.
+    if which("curl"):
+        p = subprocess.run(["curl", "-fsSL", f"{base}/install_wizard.py", "-o", wizard],
+                           capture_output=True)
+        fetched = p.returncode == 0 and os.path.isfile(wizard)
+    if not fetched:
+        try:
+            urllib.request.urlretrieve(f"{base}/install_wizard.py", wizard)
+            fetched = True
+        except Exception:
+            pass
+    if not fetched:
+        boom("Couldn't fetch the wizard (network?). Run it directly instead:\n"
              "  curl -fsSL https://quaestio.online/bot/install.sh | bash")
     try:
         import textual  # noqa: F401

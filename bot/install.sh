@@ -211,8 +211,21 @@ EOF
   ln -sf "$BIN_DIR/quaestio" "$target/quaestio"
   say "\"quaestio\" is now a command ($target/quaestio)."
   if ! printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$target"; then
-    warn "Add it to your PATH (or open a new terminal) for \`quaestio\` to work:"
-    say "    export PATH=\"$target:\$PATH\""
+    # Put it on PATH for real: append to the shell startup file so every
+    # new terminal (and a quick `source`) picks it up. This was the #1
+    # install complaint (`quaestio: command not found` on macOS).
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+      case "$(basename "$rc")" in
+        .zshrc) [[ "$(uname -s)" != "Darwin" ]] && [[ -n "${BASH_VERSION:-}" ]] && continue ;;
+      esac
+      touch "$rc" 2>/dev/null || continue
+      if ! grep -qxF "export PATH=\"$target:\$PATH\" # quaestio" "$rc" 2>/dev/null; then
+        printf '\nexport PATH="%s:$PATH" # quaestio\n' "$target" >> "$rc"
+      fi
+    done
+    export PATH="$target:$PATH"
+    hash -r 2>/dev/null || true
+    say "Added $target to your PATH (shell startup file updated — \`quaestio\` works now and in new terminals)."
   fi
 }
 
