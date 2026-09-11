@@ -64,6 +64,28 @@ if not os.environ.get("QUAESTIO_NO_WIZARD"):
 # ---------------------------------------------------------------------------
 # Shared config the screens fill in.
 # ---------------------------------------------------------------------------
+def _detect_tailnet_ip():
+    """Stable Tailnet address for laptops that move networks ('' if none)."""
+    try:
+        r = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5)
+        ip = (r.stdout or "").strip().split()[0] if r.returncode == 0 else ""
+        return ip if ip.startswith("100.") else ""
+    except Exception:
+        return ""
+
+
+def _detect_portable_share():
+    """Light default share on portable Macs (10%), full default elsewhere."""
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["sysctl", "-n", "hw.model"], capture_output=True, text=True, timeout=5)
+            if "MacBook" in (r.stdout or ""):
+                return 10
+    except Exception:
+        pass
+    return 50
+
+
 class Cfg:
     def __init__(self):
         self.install_dir = INSTALL_DIR
@@ -76,7 +98,13 @@ class Cfg:
         self.endpoint_mode = "local"
         self.remote_endpoint = ""
         self.model = MODEL_DEFAULT
-        self.pool_share = 50
+        self.pool_share = _detect_portable_share()
+        self.tailnet_ip = _detect_tailnet_ip()
+        if self.tailnet_ip:
+            # Prefill only (local stays default: localhost always answers).
+            # The pool step uses this reachable-on-any-WiFi address, never
+            # exposed off the tailnet.
+            self.remote_endpoint = f"http://{self.tailnet_ip}:11434"
         self.token = os.environ.get("BOT_TOKEN", "")
         self.keyfile = os.environ.get("QUAESTIO_KEY_FILE") or (
             os.path.join(os.path.expanduser("~"), ".quaestio", "keyfile") if sys.platform != "linux" else "/etc/quaestio/keyfile")
@@ -379,16 +407,24 @@ class Location(_NavScreen):
 
 class Pool(_NavScreen):
     def compose(self) -> ComposeResult:
+        tailnote = ""
+        try:
+            if getattr(cfg, "tailnet_ip", ""):
+                tailnote = (f"\n  Tailscale found ({cfg.tailnet_ip}) — your node stays connected on any WiFi\n"
+                            "  and goes quiet on its own when you're offline. Nothing to disconnect.")
+        except Exception:
+            pass
         yield Header(show_clock=True)
         with Vertical(id="body"):
             yield Static("  [b]Contribute to the community pool[/b]", classes="title")
             yield Static(
                 "  You'll stay anonymous — the pool only ever sees a random node ID, and your\n"
                 "  endpoint + model are encrypted at rest. Nobody can piece together who you are.\n"
-                "  Contributors earn +25 AI quota, +2 memory and priority routing (your box serves you first).",
+                "  Contributors earn +25 AI quota, +2 memory and priority routing (your box serves you first)."
+                + tailnote,
                 classes="sub")
             yield NavSelect([("10% — spare cycles only", 10), ("25%", 25), ("50% (default)", 50), ("75%", 75), ("100% — share it all", 100)],
-                         value=50, id="share", prompt="How much of your box to lend")
+                         value=cfg.pool_share, id="share", prompt="How much of your box to lend")
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
                 yield Button("Back", variant="default", id="back")
@@ -798,7 +834,14 @@ POOL_BROKER = os.environ.get("POOL_BROKER_URL") or "https://admin.quaestio.onlin
 def _step_pool():
     if not cfg.pool:
         return "skipped (not contributing)"
-    endpoint = cfg.remote_endpoint if (cfg.endpoint_mode == "remote" and cfg.remote_endpoint) else "http://127.0.0.1:11434"
+    if cfg.endpoint_mode == "remote" and cfg.remote_endpoint:
+        endpoint = cfg.remote_endpoint
+    elif getattr(cfg, "tailnet_ip", ""):
+        # localhost is never reachable by the pool — use the stable tailnet
+        # address so a moving laptop stays connected on any WiFi.
+        endpoint = f"http://{cfg.tailnet_ip}:11434"
+    else:
+        endpoint = "http://127.0.0.1:11434"
     join_key = os.environ.get("POOL_JOIN_KEY") or ""
     return _pool_join_remote(POOL_BROKER, join_key, endpoint, cfg.model, cfg.pool_share)
 

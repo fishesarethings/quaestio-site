@@ -17,6 +17,7 @@ behind except an empty ~/quaestio if it already existed before install.
 
 import argparse
 import datetime
+import hashlib
 import os
 import shutil
 import subprocess
@@ -420,8 +421,42 @@ def pool_status():
 pool = pool_status
 
 
+def _tailscale_ip():
+    """This box's stable Tailnet address, or ''. Laptops that move networks
+    keep the same 100.x address, so it's the right pool endpoint for them —
+    reachable from anywhere on the tailnet, never exposed to café WiFi."""
+    try:
+        p = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5)
+        ip = (p.stdout or "").strip().split()[0] if p.returncode == 0 else ""
+        return ip if ip.startswith("100.") else ""
+    except Exception:
+        return ""
+
+
+def _probe_ollama_models(endpoint, timeout=4):
+    """Model names served at an Ollama URL, or [] if unreachable."""
+    import json as _json
+    import urllib.request as _urlreq
+    try:
+        with _urlreq.urlopen(endpoint.rstrip("/") + "/api/tags", timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode())
+        return [m["name"] for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        return []
+
+
+def _is_portable_mac():
+    try:
+        p = subprocess.run(["sysctl", "-n", "hw.model"], capture_output=True, text=True, timeout=5)
+        return "MacBook" in (p.stdout or "")
+    except Exception:
+        return False
+
+
 def contribute():
     say("COMMUNITY POOL — lend part of your AI box, borrow from others when busy.\n")
+    say("Offline is fine: the pool parks your node while you're away and", DIM)
+    say("routes back to you when you're back. Nothing to disconnect.", DIM)
     node_secret = read_env("POOL_NODE_SECRET") or ""
     if node_secret:
         d = _pool_status_data(node_secret)
@@ -449,13 +484,35 @@ def contribute():
             node_secret = ""
         else:
             say(f"Pool broker unreachable ({d['error']}). Showing stored registration.")
-    endpoint = input("Your Ollama URL [default http://127.0.0.1:11434]: ").strip() or "http://127.0.0.1:11434"
-    model = input("Model you're sharing [default qwen2.5:1.5b]: ").strip() or "qwen2.5:1.5b"
-    share = input("How much of your box to share, percent [10-100, default 50]: ").strip() or "50"
+    tail_ip = _tailscale_ip()
+    if tail_ip:
+        say(f"Tailscale detected ({tail_ip}) — your address stays the same on every WiFi,", GREEN)
+        say("so the pool can always reach you, and nobody off your tailnet can.", GREEN)
+        default_ep = f"http://{tail_ip}:11434"
+    else:
+        default_ep = "http://127.0.0.1:11434"
+    endpoint = input(f"Your Ollama URL [default {default_ep}]: ").strip() or default_ep
+    local_models = _probe_ollama_models("http://127.0.0.1:11434")
+    if local_models:
+        say(f"Found on this box: {', '.join(local_models[:8])}", GREEN)
+        default_model = local_models[0]
+    else:
+        say("No local Ollama answering — start it (ollama serve) or point at a remote box.", YELLOW)
+        default_model = "qwen2.5:1.5b"
+    model = input(f"Model you're sharing [default {default_model}]: ").strip() or default_model
+    if _probe_ollama_models(endpoint):
+        say("Endpoint answers — the pool will be able to reach it.", GREEN)
+    else:
+        say("That endpoint didn't answer just now — join anyway and it'll", YELLOW)
+        say("activate automatically once reachable (offline is fine).", YELLOW)
+    default_share = "10" if _is_portable_mac() else "50"
+    if default_share == "10":
+        say("Laptop detected — defaulting to a light 10% share.", DIM)
+    share = input(f"How much of your box to share, percent [10-100, default {default_share}]: ").strip() or default_share
     try:
         share = max(10, min(100, int(share)))
     except ValueError:
-        share = 50
+        share = int(default_share)
     say("Connecting to the community pool…", DIM)
     reg = _pool_json(_broker_url().rstrip("/") + "/api/pool/register",
                      {"endpoint": endpoint, "model": model, "share": share,
@@ -486,10 +543,11 @@ def contribute():
         db_path = cand if os.path.isdir(BOT_DIR) else os.path.join(os.getcwd(), "quaestio.db")
     import sqlite3
     conn = sqlite3.connect(db_path)
+    ehash = hashlib.sha256(endpoint.strip().rstrip("/").lower().encode()).hexdigest()
     conn.execute(
-        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) "
-        "VALUES (?, ?, ?, ?, 1, 'cli', ?)",
-        (_anon_name(), enc_endpoint, enc_model, share, datetime.datetime.now().isoformat()),
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, endpoint_hash) "
+        "VALUES (?, ?, ?, ?, 1, 'cli', ?, ?)",
+        (_anon_name(), enc_endpoint, enc_model, share, datetime.datetime.now().isoformat(), ehash),
     )
     conn.commit()
     conn.close()
