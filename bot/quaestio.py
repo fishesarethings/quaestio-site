@@ -337,17 +337,41 @@ def _anon_name() -> str:
 
 
 def _broker_url():
-    return (read_env("POOL_BROKER_URL") or "").strip() or "https://admin.quaestio.online"
+    # admin.quaestio.online today; flip to pool.quaestio.online the moment its
+    # DNS exists (pool-serve already prefers it via _broker_url_fallback).
+    return ((os.environ.get("POOL_BROKER_URL") or "").strip()
+            or (read_env("POOL_BROKER_URL") or "").strip()
+            or "https://admin.quaestio.online")
+
+
+def _broker_url_fallback():
+    """pool.quaestio.online first, admin.quaestio.online while DNS propagates."""
+    primary = _broker_url()
+    for cand in (primary, "https://admin.quaestio.online"):
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                cand.rstrip("/") + "/api/health",
+                headers={"User-Agent": "Quaestio-pool/1.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                if r.status == 200:
+                    return cand
+        except Exception:
+            continue
+    return primary
 
 
 def _pool_json(url, payload):
     import json
     import urllib.error
     import urllib.request
+    # Custom UA: Cloudflare blocks Python-urllib/* (403), which silently broke
+    # every broker call. Never use the default UA against our domains.
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "Quaestio-pool/1.0"},
         method="POST",
     )
     try:
@@ -360,9 +384,11 @@ def _pool_json(url, payload):
 
 
 def _env_file_path():
-    if os.path.isdir(BOT_DIR):
-        return os.path.join(BOT_DIR, ".env")
-    return os.path.join(os.getcwd(), ".env")
+    # Always the install's .env — never the current directory. (An old
+    # fallback wrote pool creds to ./​.env when BOT_DIR didn't exist yet,
+    # stranding nodes nobody could manage.)
+    os.makedirs(BOT_DIR, exist_ok=True)
+    return os.path.join(BOT_DIR, ".env")
 
 
 def _write_pool_creds(data):
@@ -421,6 +447,94 @@ def pool_status():
 pool = pool_status
 
 
+def _ollama_generate(job):
+    """Run one claimed job on the local Ollama box."""
+    import json as _json
+    import urllib.request as _urlreq
+    body = {"model": job["model"], "prompt": job["prompt"], "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": float(job.get("temperature", 0.6)),
+                        "num_predict": int(job.get("max_tokens", 150)),
+                        "top_p": float(job.get("top_p", 0.9)),
+                        "repeat_penalty": float(job.get("repeat_penalty", 1.15))},
+            "stop": job.get("stop") or []}
+    if job.get("system"):
+        body["system"] = job["system"]
+    req = _urlreq.Request("http://127.0.0.1:11434/api/generate",
+                          data=_json.dumps(body).encode(),
+                          headers={"Content-Type": "application/json"})
+    with _urlreq.urlopen(req, timeout=180) as resp:
+        data = _json.loads(resp.read().decode())
+    return (data.get("response") or "").strip()
+
+
+def pool_serve():
+    """One-command servant: register if needed, then serve jobs forever.
+
+    Outbound HTTPS only — works behind any NAT, needs no Tailnet, no port
+    forward, no reachable endpoint. Close the lid / Ctrl-C anytime; offline
+    just means idle, the pool routes around you automatically."""
+    import time
+    broker = _broker_url_fallback()
+    say(f"Pool broker: {broker}", DIM)
+    node_secret = read_env("POOL_NODE_SECRET") or ""
+    if not node_secret:
+        models = _probe_ollama_models("http://127.0.0.1:11434")
+        if not models:
+            boom("No local Ollama answering. Start it first (`ollama serve`), then re-run.")
+        share = 10 if _is_portable_mac() else 50
+        reg = _pool_json(broker.rstrip("/") + "/api/pool/register",
+                         {"pull": 1, "model": models[0], "share": share})
+        if "error" in reg or not reg.get("node_secret"):
+            boom(f"Couldn't register ({reg.get('error', '?')}). Try again in a moment.")
+        _write_pool_creds(reg)
+        node_secret = reg["node_secret"]
+        say(f"Registered as {reg.get('name', 'node-?')} (pull worker, {share}%).", GREEN)
+    else:
+        say("Registered node found — serving.", GREEN)
+    say("Serving pool jobs — Ctrl-C to stop. Offline just idles.", GREEN)
+    backoff = 5
+    while True:
+        try:
+            models = _probe_ollama_models("http://127.0.0.1:11434")
+            if not models:
+                say("Local Ollama went quiet — waiting for it…", YELLOW)
+                time.sleep(15)
+                continue
+            claim = _pool_json(broker.rstrip("/") + "/api/pool/jobs/claim",
+                               {"node_secret": node_secret, "models": models})
+            if "error" in claim:
+                say(f"Broker hiccup ({claim['error']}) — retrying…", YELLOW)
+                time.sleep(15)
+                continue
+            job = claim.get("job")
+            if not job:
+                time.sleep(3)
+                backoff = 5
+                continue
+            say(f"Job {job['id']} ({job['model']})…", DIM)
+            try:
+                answer = _ollama_generate(job)
+                if not answer:
+                    raise RuntimeError("empty reply")
+                _pool_json(broker.rstrip("/") + "/api/pool/jobs/complete",
+                           {"node_secret": node_secret, "job_id": job["id"], "response": answer})
+                say(f"Job {job['id']} done ({len(answer.split())} words).", GREEN)
+            except Exception as e:
+                _pool_json(broker.rstrip("/") + "/api/pool/jobs/complete",
+                           {"node_secret": node_secret, "job_id": job["id"],
+                            "error": str(e)[:200]})
+                say(f"Job {job['id']} failed ({e}) — reported.", YELLOW)
+            backoff = 5
+        except KeyboardInterrupt:
+            say("Stopped. The pool already routed around you.", GREEN)
+            return
+        except Exception as e:
+            say(f"Hiccup ({e}) — backing off…", YELLOW)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
 def _tailscale_ip():
     """This box's stable Tailnet address, or ''. Laptops that move networks
     keep the same 100.x address, so it's the right pool endpoint for them —
@@ -463,11 +577,14 @@ def contribute():
         if d and "error" not in d and "name" in d:
             say(f"You're node {d['name']} — {d['status']}, {d['share']}% share, "
                 f"{d['served']} requests served.")
-            choice = input("\nWhat do you want to do?\n"
-                           "  [u] update endpoint / model / share\n"
-                           "  [l] leave the pool\n"
-                           "  [c] cancel\n"
-                           "> ").strip().lower()
+            if bool(globals().get("AUTO_YES")):
+                choice = "u"
+            else:
+                choice = input("\nWhat do you want to do?\n"
+                               "  [u] update endpoint / model / share\n"
+                               "  [l] leave the pool\n"
+                               "  [c] cancel\n"
+                               "> ").strip().lower()
             if choice == "l":
                 let = _pool_json(_broker_url().rstrip("/") + "/api/pool/unregister",
                                  {"node_secret": node_secret})
@@ -485,13 +602,18 @@ def contribute():
         else:
             say(f"Pool broker unreachable ({d['error']}). Showing stored registration.")
     tail_ip = _tailscale_ip()
+    auto = bool(globals().get("AUTO_YES"))
     if tail_ip:
         say(f"Tailscale detected ({tail_ip}) — your address stays the same on every WiFi,", GREEN)
         say("so the pool can always reach you, and nobody off your tailnet can.", GREEN)
         default_ep = f"http://{tail_ip}:11434"
     else:
         default_ep = "http://127.0.0.1:11434"
-    endpoint = input(f"Your Ollama URL [default {default_ep}]: ").strip() or default_ep
+    if auto:
+        endpoint = default_ep
+        say(f"Ollama URL: {endpoint} (auto)", DIM)
+    else:
+        endpoint = input(f"Your Ollama URL [default {default_ep}]: ").strip() or default_ep
     local_models = _probe_ollama_models("http://127.0.0.1:11434")
     if local_models:
         say(f"Found on this box: {', '.join(local_models[:8])}", GREEN)
@@ -499,7 +621,11 @@ def contribute():
     else:
         say("No local Ollama answering — start it (ollama serve) or point at a remote box.", YELLOW)
         default_model = "qwen2.5:1.5b"
-    model = input(f"Model you're sharing [default {default_model}]: ").strip() or default_model
+    if auto:
+        model = default_model
+        say(f"Model: {model} (auto)", DIM)
+    else:
+        model = input(f"Model you're sharing [default {default_model}]: ").strip() or default_model
     if _probe_ollama_models(endpoint):
         say("Endpoint answers — the pool will be able to reach it.", GREEN)
     else:
@@ -508,11 +634,15 @@ def contribute():
     default_share = "10" if _is_portable_mac() else "50"
     if default_share == "10":
         say("Laptop detected — defaulting to a light 10% share.", DIM)
-    share = input(f"How much of your box to share, percent [10-100, default {default_share}]: ").strip() or default_share
-    try:
-        share = max(10, min(100, int(share)))
-    except ValueError:
+    if auto:
         share = int(default_share)
+        say(f"Share: {share}% (auto)", DIM)
+    else:
+        share = input(f"How much of your box to share, percent [10-100, default {default_share}]: ").strip() or default_share
+        try:
+            share = max(10, min(100, int(share)))
+        except ValueError:
+            share = int(default_share)
     say("Connecting to the community pool…", DIM)
     reg = _pool_json(_broker_url().rstrip("/") + "/api/pool/register",
                      {"endpoint": endpoint, "model": model, "share": share,
@@ -1008,6 +1138,7 @@ def help_text():
     print("    quaestio status")
     print("    quaestio settings")
     print("    quaestio contribute")
+    print("    quaestio pool-serve   (serve jobs: register + work forever)")
     print("    quaestio pool")
     print("    quaestio update")
     print("    quaestio uninstall")
@@ -1199,7 +1330,9 @@ def main():
                                      add_help=False)
     parser.add_argument("action", nargs="?", default=None,
                         help="status | start | stop | restart | update | uninstall | "
-                             "contribute | pool | settings | localweb | help | about")
+                             "contribute | pool-serve | pool | settings | localweb | help | about")
+    parser.add_argument("--yes", action="store_true",
+                        help="non-interactive: accept auto-detected values")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
     if args.help or args.action in ("help", "about"):
@@ -1208,7 +1341,9 @@ def main():
     if not args.action:
         menu()
         return
-    fn = globals().get(args.action)
+    if args.yes:
+        globals()["AUTO_YES"] = True
+    fn = globals().get(args.action.replace("-", "_"))
     if fn is None or not callable(fn):
         boom(f"Unknown action '{args.action}'. Type `quaestio help` (or `{os.path.join(BOT_DIR, 'quaestio.py')} help` before install).")
     fn()

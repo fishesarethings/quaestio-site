@@ -168,6 +168,33 @@ def _migrate_pool_broker(conn):
         conn.execute("ALTER TABLE hosters ADD COLUMN node_secret_hash TEXT DEFAULT ''")
     if "served" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN served INTEGER DEFAULT 0")
+    if "pull" not in cols:
+        # Pull workers call OUT to the broker (NAT-proof, no Tailnet, no port
+        # forward) instead of receiving inbound calls.
+        conn.execute("ALTER TABLE hosters ADD COLUMN pull INTEGER DEFAULT 0")
+    if "last_seen" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN last_seen TEXT DEFAULT ''")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pool_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt TEXT, system TEXT, model TEXT,
+            temperature REAL DEFAULT 0.6, max_tokens INTEGER DEFAULT 150,
+            top_p REAL DEFAULT 0.9, repeat_penalty REAL DEFAULT 1.15,
+            stop TEXT DEFAULT '[]',
+            status TEXT DEFAULT 'pending',
+            result TEXT DEFAULT '', error TEXT DEFAULT '',
+            created_at TEXT DEFAULT '', claimed_at TEXT DEFAULT '',
+            done_at TEXT DEFAULT '', claimed_by INTEGER DEFAULT 0, tries INTEGER DEFAULT 0
+        )"""
+    )
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON pool_jobs(status, model, id)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_pull ON hosters(pull, enabled)",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
 
 
 def _migrate_pool_anonymize(conn):
@@ -861,8 +888,16 @@ async def api_pool_register(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
+    try:
+        pull = 1 if int(body.get("pull", 0) or 0) else 0
+    except (ValueError, TypeError):
+        pull = 0
     endpoint = (body.get("endpoint") or "").strip()
-    if not endpoint or len(endpoint) > 200 or not endpoint.startswith(("http://", "https://")):
+    # Pull workers need no reachable endpoint (they call OUT) — only direct
+    # push nodes must supply one.
+    if not endpoint and not pull:
+        raise HTTPException(400, "endpoint is required (or register as a pull worker)")
+    if endpoint and (len(endpoint) > 200 or not endpoint.startswith(("http://", "https://"))):
         raise HTTPException(400, "endpoint must be an http(s) URL")
     model = (body.get("model") or "").strip()[:80] or "default"
     try:
@@ -882,9 +917,9 @@ async def api_pool_register(request: Request):
         if row:
             enabled = 1 if has_key else int(row["enabled"] or 0)
             conn.execute(
-                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=?, at=?, endpoint_hash=? WHERE id=?",
+                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=?, at=?, endpoint_hash=?, pull=? WHERE id=?",
                 (qconfig.maybe_encrypt("pool_endpoint", endpoint),
-                 qconfig.maybe_encrypt("pool_model", model), share, enabled, now, ehash, row["id"]),
+                 qconfig.maybe_encrypt("pool_model", model), share, enabled, now, ehash, pull, row["id"]),
             )
             conn.commit()
             conn.close()
@@ -894,10 +929,10 @@ async def api_pool_register(request: Request):
     new_secret = secrets.token_urlsafe(24)
     enabled = 1 if has_key else 0
     conn.execute(
-        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash, endpoint_hash)"
-        " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?, ?)",
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash, endpoint_hash, pull)"
+        " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?, ?, ?)",
         (name, qconfig.maybe_encrypt("pool_endpoint", endpoint),
-         qconfig.maybe_encrypt("pool_model", model), share, enabled, now, _node_secret_hash(new_secret), ehash),
+         qconfig.maybe_encrypt("pool_model", model), share, enabled, now, _node_secret_hash(new_secret), ehash, pull),
     )
     conn.commit()
     conn.close()
@@ -1007,6 +1042,120 @@ async def api_pool_report(request: Request):
                 until = (datetime.datetime.now(datetime.timezone.utc)
                          + datetime.timedelta(seconds=600)).isoformat()
                 conn.execute("UPDATE hosters SET down_until=? WHERE id=?", (until, hid))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Pull job queue — contributors call OUT (NAT-proof: no Tailnet, no inbound)
+# ---------------------------------------------------------------------------
+
+JOB_CLAIM_TIMEOUT = 120  # stale claims return to the queue after this long
+
+
+@app.post("/api/pool/jobs/claim")
+async def api_jobs_claim(request: Request):
+    """A pull worker asks for work. Auth: node_secret. Body may list the
+    models this box currently serves; the oldest matching pending job (or a
+    stale claim from a dead worker) is handed over. Offline boxes simply stop
+    asking — nothing to disconnect."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    models = [str(m) for m in (body.get("models") or []) if str(m).strip()][:20]
+    conn = db()
+    node = conn.execute(
+        "SELECT id, model, enabled FROM hosters WHERE node_secret_hash=?",
+        (_node_secret_hash(secret),),
+    ).fetchone()
+    if not node:
+        conn.close()
+        raise HTTPException(404, "Unknown node — re-run `quaestio contribute`.")
+    if not (node["enabled"] or 0):
+        conn.close()
+        return {"job": None, "status": "pending"}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stale = (now - datetime.timedelta(seconds=JOB_CLAIM_TIMEOUT)).isoformat()
+    want = models or ([node["model"]] if node["model"] else [])
+    want = [qconfig.maybe_decrypt("pool_model", w) if w.startswith("enc:") else w for w in want]
+    job = None
+    if want:
+        q = ",".join("?" * len(want))
+        job = conn.execute(
+            f"""SELECT id, prompt, system, model, temperature, max_tokens, top_p, repeat_penalty, stop
+                FROM pool_jobs WHERE status IN ('pending','claimed') AND model IN ({q})
+                AND (status='pending' OR claimed_at<?) ORDER BY id LIMIT 1""",
+            [*want, stale],
+        ).fetchone()
+    else:
+        job = conn.execute(
+            """SELECT id, prompt, system, model, temperature, max_tokens, top_p, repeat_penalty, stop
+               FROM pool_jobs WHERE status='pending' OR (status='claimed' AND claimed_at<?)
+               ORDER BY id LIMIT 1""",
+            (stale,),
+        ).fetchone()
+    if job is None:
+        conn.execute("UPDATE hosters SET last_seen=? WHERE id=?", (now.isoformat(), node["id"]))
+        conn.commit()
+        conn.close()
+        return {"job": None}
+    conn.execute("UPDATE pool_jobs SET status='claimed', claimed_at=?, claimed_by=?, tries=tries+1 WHERE id=?",
+                 (now.isoformat(), node["id"], job["id"]))
+    conn.execute("UPDATE hosters SET last_seen=? WHERE id=?", (now.isoformat(), node["id"]))
+    conn.commit()
+    conn.close()
+    import json as _json
+    try:
+        stop = _json.loads(job["stop"] or "[]")
+    except Exception:
+        stop = []
+    return {"job": {"id": job["id"], "prompt": job["prompt"] or "", "system": job["system"] or "",
+                    "model": job["model"] or "", "temperature": job["temperature"] or 0.6,
+                    "max_tokens": job["max_tokens"] or 150, "top_p": job["top_p"] or 0.9,
+                    "repeat_penalty": job["repeat_penalty"] or 1.15, "stop": stop}}
+
+
+@app.post("/api/pool/jobs/complete")
+async def api_jobs_complete(request: Request):
+    """A worker posts its result (or error). The bot picks it up from the DB."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    secret = (body.get("node_secret") or "").strip()
+    try:
+        job_id = int(body.get("job_id", 0))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "job_id is required")
+    if not secret or not job_id:
+        raise HTTPException(400, "node_secret and job_id are required")
+    conn = db()
+    node = conn.execute("SELECT id FROM hosters WHERE node_secret_hash=?",
+                        (_node_secret_hash(secret),)).fetchone()
+    if not node:
+        conn.close()
+        raise HTTPException(404, "Unknown node")
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    response = (body.get("response") or "")[:4000]
+    error = (body.get("error") or "")[:500]
+    if error:
+        conn.execute("UPDATE pool_jobs SET status='failed', error=?, done_at=? WHERE id=? AND claimed_by=?",
+                     (error, now, job_id, node["id"]))
+    else:
+        conn.execute("UPDATE pool_jobs SET status='done', result=?, done_at=? WHERE id=? AND claimed_by=?",
+                     (response, now, job_id, node["id"]))
+        conn.execute("UPDATE hosters SET served=served+1, last_ok=?, failed=0, down_until='' WHERE id=?",
+                     (now, node["id"]))
+    conn.execute("UPDATE hosters SET last_seen=? WHERE id=?", (now, node["id"]))
     conn.commit()
     conn.close()
     return {"ok": True}

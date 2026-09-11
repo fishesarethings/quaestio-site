@@ -802,6 +802,8 @@ def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, sha
     body = _json.dumps({"endpoint": endpoint, "model": model, "share": int(share)}).encode()
     req = _urlreq.Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
+        # Cloudflare 403s Python-urllib/* — always send a real UA to our domains.
+        "User-Agent": "Quaestio-pool/1.0",
         "X-Pool-Key": join_key or "",
     })
     try:

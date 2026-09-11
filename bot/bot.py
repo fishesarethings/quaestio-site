@@ -321,6 +321,24 @@ def _migrate_pool_health(conn):
         conn.execute("ALTER TABLE hosters ADD COLUMN served INTEGER DEFAULT 0")
     if "endpoint_hash" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN endpoint_hash TEXT DEFAULT ''")
+    if "pull" not in cols:
+        # Pull workers call OUT to the broker (NAT-proof); push nodes receive calls.
+        conn.execute("ALTER TABLE hosters ADD COLUMN pull INTEGER DEFAULT 0")
+    if "last_seen" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN last_seen TEXT DEFAULT ''")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pool_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt TEXT, system TEXT, model TEXT,
+            temperature REAL DEFAULT 0.6, max_tokens INTEGER DEFAULT 150,
+            top_p REAL DEFAULT 0.9, repeat_penalty REAL DEFAULT 1.15,
+            stop TEXT DEFAULT '[]',
+            status TEXT DEFAULT 'pending',
+            result TEXT DEFAULT '', error TEXT DEFAULT '',
+            created_at TEXT DEFAULT '', claimed_at TEXT DEFAULT '',
+            done_at TEXT DEFAULT '', claimed_by INTEGER DEFAULT 0, tries INTEGER DEFAULT 0
+        )"""
+    )
     # Backfill the lookup hash for rows written before it existed.
     try:
         for r in conn.execute("SELECT id, endpoint FROM hosters WHERE endpoint_hash='' OR endpoint_hash IS NULL").fetchall():
@@ -334,6 +352,8 @@ def _migrate_pool_health(conn):
         "CREATE INDEX IF NOT EXISTS idx_hosters_enabled ON hosters(enabled)",
         "CREATE INDEX IF NOT EXISTS idx_hosters_hash ON hosters(endpoint_hash)",
         "CREATE INDEX IF NOT EXISTS idx_hosters_down ON hosters(down_until)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_pull ON hosters(pull, enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON pool_jobs(status, model, id)",
     ):
         try:
             conn.execute(ddl)
@@ -469,6 +489,18 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
     stop = ["\nbot:", "\nmember:"]
     if asker:
         stop.append(f"\n{asker}:")
+    # Pull workers first (NAT-proof contributors): if any were seen recently,
+    # give them the job; on timeout the direct chain below still answers.
+    try:
+        if pull_nodes_online(cfg.get("model", "")):
+            return await ask_pull_pool(prompt, cfg["model"],
+                                       params.get("temperature", temperature),
+                                       params.get("num_predict", max_tokens),
+                                       params.get("top_p", 0.9),
+                                       params.get("repeat_penalty", 1.15),
+                                       stop, system or cfg.get("persona_system", ""))
+    except ConnectionError:
+        pass
     last_err = None
     for i, ep in enumerate(chain):
         if not ep:
@@ -837,6 +869,75 @@ def pick_pool_endpoint(model="") -> str:
     """Pick the first healthy pool endpoint (weighted by share). Empty pool → ""."""
     cands = pool_candidates(model, limit=1)
     return (cands[0]["endpoint"] or "").strip() if cands else ""
+
+
+PULL_JOB_WAIT = 25  # seconds to wait for pull workers before direct fallback
+PULL_ONLINE_AFTER = 180  # a pull node seen this recently counts as online
+
+
+def pull_nodes_online(model="") -> int:
+    """Recently-seen pull workers (outbound-only contributors). Model is
+    matched at claim time; any online pull node means the queue is live."""
+    conn = db()
+    try:
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(seconds=PULL_ONLINE_AFTER)).isoformat()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM hosters WHERE enabled=1 AND pull=1 AND last_seen>?",
+            (cutoff,),
+        ).fetchone()[0]
+        return int(n or 0)
+    finally:
+        conn.close()
+
+
+async def ask_pull_pool(prompt: str, model: str, temperature: float, max_tokens: int,
+                        top_p: float, repeat_penalty: float, stop: list, system: str) -> str:
+    """Enqueue a job for pull workers and wait. Raises ConnectionError on
+    timeout so the caller falls back to direct routing. Stale jobs are
+    reaped so the table can't grow forever."""
+    import json as _json
+    conn = db()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    cur = conn.execute(
+        """INSERT INTO pool_jobs (prompt, system, model, temperature, max_tokens, top_p,
+                                  repeat_penalty, stop, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+        (prompt[:2000], (system or "")[:2000], model, float(temperature), int(max_tokens),
+         float(top_p), float(repeat_penalty), _json.dumps(stop or []), now),
+    )
+    job_id = cur.lastrowid
+    # Reap jobs older than an hour (done/failed/pending alike).
+    try:
+        old = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.timedelta(hours=1)).isoformat()
+        conn.execute("DELETE FROM pool_jobs WHERE created_at<?", (old,))
+    except Exception:
+        pass
+    conn.commit()
+    deadline = time.time() + PULL_JOB_WAIT
+    try:
+        while time.time() < deadline:
+            await asyncio.sleep(1.5)
+            row = conn.execute("SELECT status, result, error FROM pool_jobs WHERE id=?",
+                               (job_id,)).fetchone()
+            if row is None:
+                break
+            if row["status"] == "done":
+                answer = (row["result"] or "").strip()
+                if not answer:
+                    raise ConnectionError("AI returned an empty reply.")
+                return answer
+            if row["status"] == "failed":
+                raise ConnectionError("AI worker failed — falling back.")
+        raise ConnectionError("AI pull workers are busy. Trying direct route.")
+    finally:
+        try:
+            conn.execute("DELETE FROM pool_jobs WHERE id=?", (job_id,))
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
 
 
 def _pool_ping(endpoint: str) -> bool:
