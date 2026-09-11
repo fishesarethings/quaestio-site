@@ -453,6 +453,16 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
     raise last_err or ConnectionError("AI is offline — no model box replied.")
 
 
+# Pool contributor perks — the incentive for lending compute. Contributors
+# (guilds with ai_contribute=1 and their own box configured) earn:
+#   * priority routing (their own box first — lowest latency, works offline),
+#   * +CONTRIBUTOR_QUOTA_BONUS AI calls per window above host caps,
+#   * +CONTRIBUTOR_MEMORY_BONUS conversation turns,
+#   * visible "Pool contributor" credit in /ai status.
+CONTRIBUTOR_QUOTA_BONUS = 25
+CONTRIBUTOR_MEMORY_BONUS = 2
+
+
 def guild_ai_config(guild_id):
     """Per-server AI settings (admin-overridable via web UI) merged over defaults.
 
@@ -500,6 +510,14 @@ def guild_ai_config(guild_id):
         base["model"] = get_cfg(guild_id, "ai_model", OLLAMA_MODEL)
         base["memory"] = max(1, _safe_int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT), MEMORY_DEFAULT))
         base["quota"] = max(0, _safe_int(get_cfg(guild_id, "ai_quota", "0"), 0))
+        if base["contribute"] and base["endpoint"]:
+            # Contributors earn above-cap perks even on their own box.
+            if base["quota"]:
+                base["quota"] = base["quota"] + CONTRIBUTOR_QUOTA_BONUS
+            base["memory"] = base["memory"] + CONTRIBUTOR_MEMORY_BONUS
+            base["contributor_perks"] = True
+        else:
+            base["contributor_perks"] = False
         return base
 
     endpoint = host("ai_endpoint", OLLAMA_BASE_URL)
@@ -521,8 +539,22 @@ def guild_ai_config(guild_id):
     # host's own box as the last resort. See ask_ollama_any().
     base["fallbacks"] = [e for e in pool_eps[1:] if e and e != endpoint]
     own_ep = (get_cfg("host", "ai_endpoint", "") or OLLAMA_BASE_URL or "").strip()
+    own_box = (get_cfg(guild_id, "ai_endpoint", "") or "").strip()
+    if base["contribute"] and own_box and own_box not in [endpoint, *base["fallbacks"]]:
+        # Contributor perk: their own box goes FIRST (lowest latency for them,
+        # and their server keeps working even if the pool is down).
+        base["fallbacks"] = [endpoint, *base["fallbacks"]]
+        base["endpoint"] = own_box
+        base["contributor_perks"] = True
+    else:
+        base["contributor_perks"] = False
     if own_ep and own_ep != endpoint and own_ep not in base["fallbacks"]:
         base["fallbacks"].append(own_ep)
+    if base["contributor_perks"]:
+        # Above-cap bonus: the tangible reward for lending compute.
+        if quota:
+            quota = quota + CONTRIBUTOR_QUOTA_BONUS
+        memory = memory + CONTRIBUTOR_MEMORY_BONUS
     base["memory"] = memory
     base["quota"] = quota
     return base
@@ -2240,14 +2272,20 @@ async def ai_status(interaction: discord.Interaction):
     if cfg.get("ai_character"):
         persona_note = f"\nCharacter: `{cfg['ai_character']}`"
     personality = get_cfg(interaction.guild.id, "ai_personality", "none")
+    admin = is_admin(interaction.user)
+    endpoint_line = f"Endpoint: `{cfg['endpoint']}`\n" if admin else ""
+    perk_note = ""
+    if cfg.get("contributor_perks"):
+        perk_note = (f"\n🌟 Pool contributor ✓ (+{CONTRIBUTOR_QUOTA_BONUS} quota, "
+                     f"+{CONTRIBUTOR_MEMORY_BONUS} memory, priority routing)")
     await interaction.response.send_message(
         f"**AI settings**\n"
         f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
         f"Source: {source_note}\n"
         f"Model: `{cfg['model']}`\n"
-        f"Endpoint: `{cfg['endpoint']}`\n"
+        f"{endpoint_line}"
         f"Personality: `{personality or 'none'}` · Memory: {cfg['memory']} turns/channel\n"
-        f"Quota: {cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}\n{persona_note}"
+        f"Quota: {cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}\n{persona_note}{perk_note}"
         f"\nReplies on mention: {'✅' if cfg['ai_mention'] else '❌'}\n"
         f"Conversation mode: {'✅ stays ' + str(cfg['conv_minutes']) + ' min after a reply' if cfg['conv'] else '❌ (needs @ each time)'}\n"
         f"Allowed channels: {allowed_note}\n"
@@ -2263,6 +2301,31 @@ async def ai_clear(interaction: discord.Interaction):
         return
     memory.clear(interaction.guild.id, interaction.channel.id)
     await interaction.response.send_message("🧹 Memory cleared for this channel.", ephemeral=True)
+
+
+@bot.tree.command(name="pool", description="See the community pool + what contributors earn.")
+async def pool_info(interaction: discord.Interaction):
+    """Anonymous pool stats and the contributor perk pitch (no identities)."""
+    try:
+        nodes = pool_candidates("", limit=8)
+        total = pool_total_share()
+    except Exception:
+        nodes, total = [], 0
+    lines = ["**⚡ Community pool**",
+             f"Anonymous nodes online: **{len(nodes)}** · shared capacity: **{total}%**"]
+    if interaction.guild is not None:
+        try:
+            cfg = guild_ai_config(interaction.guild.id)
+            if cfg.get("contributor_perks"):
+                lines.append(f"🌟 This server contributes ✓ (+{CONTRIBUTOR_QUOTA_BONUS} quota, "
+                             f"+{CONTRIBUTOR_MEMORY_BONUS} memory, priority routing)")
+            else:
+                lines.append(f"Lend your box (`quaestio contribute`) and earn "
+                             f"+{CONTRIBUTOR_QUOTA_BONUS} quota, +{CONTRIBUTOR_MEMORY_BONUS} memory "
+                             f"+ priority routing. Anonymous — random node ID only.")
+        except Exception:
+            pass
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 def _remember_reply(interaction, answer, prompt):

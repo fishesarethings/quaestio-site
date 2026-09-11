@@ -566,9 +566,20 @@ def effective_ai_limits(guild_id, _pre=None):
                 memory = min(memory, host_mem)
             if host_quota:
                 quota = min(quota, host_quota)
+    # Contributor perks mirror the bot: lending compute earns above-cap bonus
+    # (+25 quota when capped, +2 memory) and priority routing of your own box.
+    perks = False
+    if (_g(guild_id, "ai_contribute", "0") or "0").strip().lower() not in ("", "0", "false", "none"):
+        own_box = (_g(guild_id, "ai_endpoint", "") or "").strip()
+        if own_box or source == "self":
+            perks = True
+            if quota:
+                quota = quota + 25
+            memory = memory + 2
     return {"memory": memory, "quota": quota, "managed": managed, "window": window,
             "source": source, "endpoint": endpoint,
-            "host_memory": host_mem, "host_quota": host_quota}
+            "host_memory": host_mem, "host_quota": host_quota,
+            "contributor_perks": perks}
 
 
 @app.get("/api/guilds/{guild_id}/settings")
@@ -596,6 +607,8 @@ async def api_get_settings(request: Request, guild_id: int):
     settings["ai_window"] = str(limits["window"])
     settings["quota_effective"] = limits["quota"]
     settings["memory_effective"] = limits["memory"]
+    settings["contributor_perks"] = limits.get("contributor_perks", False)
+    settings["contributor_bonus"] = {"quota": 25, "memory": 2}
     settings["usage_now"] = usage_calls(guild_id, limits["window"])
     now = datetime.datetime.now(datetime.timezone.utc)
     w = limits["window"]

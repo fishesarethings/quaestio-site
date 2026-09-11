@@ -384,7 +384,8 @@ class Pool(_NavScreen):
             yield Static("  [b]Contribute to the community pool[/b]", classes="title")
             yield Static(
                 "  You'll stay anonymous — the pool only ever sees a random node ID, and your\n"
-                "  endpoint + model are encrypted at rest. Nobody can piece together who you are.",
+                "  endpoint + model are encrypted at rest. Nobody can piece together who you are.\n"
+                "  Contributors earn +25 AI quota, +2 memory and priority routing (your box serves you first).",
                 classes="sub")
             yield NavSelect([("10% — spare cycles only", 10), ("25%", 25), ("50% (default)", 50), ("75%", 75), ("100% — share it all", 100)],
                          value=50, id="share", prompt="How much of your box to lend")
