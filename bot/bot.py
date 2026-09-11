@@ -19,6 +19,7 @@ Ollama host can be a different machine on your network or the same box.
 
 import asyncio
 import datetime
+import hashlib
 import json
 import os
 import random
@@ -44,7 +45,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # Where Ollama lives. This can be ANOTHER computer on your network, e.g.
 #   OLLAMA_BASE_URL=http://192.168.1.50:11434   (Windows/Linux model host)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
 
 
 def _safe_int_env(name: str, default: int) -> int:
@@ -293,6 +294,16 @@ def db_init():
     conn.close()
 
 
+def _endpoint_hash(endpoint: str) -> str:
+    """O(1) lookup key for a pool endpoint (sha256 of the normalized URL).
+
+    The endpoint itself stays Fernet-encrypted; the hash lets pool_record find
+    a host without decrypting every row, so 100k hosts cost the same as 2.
+    A hash confirms membership only if you already know the URL."""
+    norm = (endpoint or "").strip().rstrip("/").lower()
+    return hashlib.sha256(norm.encode()).hexdigest() if norm else ""
+
+
 def _migrate_pool_health(conn):
     """Add pool-host health tracking so the community pool recovers on its own
     when a computer goes offline (laptop lid closed, connection dropped) and
@@ -308,6 +319,26 @@ def _migrate_pool_health(conn):
         conn.execute("ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''")
     if "served" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN served INTEGER DEFAULT 0")
+    if "endpoint_hash" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN endpoint_hash TEXT DEFAULT ''")
+    # Backfill the lookup hash for rows written before it existed.
+    try:
+        for r in conn.execute("SELECT id, endpoint FROM hosters WHERE endpoint_hash='' OR endpoint_hash IS NULL").fetchall():
+            ep = maybe_decrypt("pool_endpoint", r["endpoint"] or "")
+            if ep:
+                conn.execute("UPDATE hosters SET endpoint_hash=? WHERE id=?", (_endpoint_hash(ep), r["id"]))
+    except Exception:
+        pass
+    # Indexes so pool routing stays fast at 100k hosts (no full-table scans).
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_hosters_enabled ON hosters(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_hash ON hosters(endpoint_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_down ON hosters(down_until)",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
 
 
 def _migrate_pool_anonymize(conn):
@@ -375,13 +406,14 @@ def flag_on(guild_id, key, default="1") -> bool:
 # Ollama AI (local or remote — the URL decides; Windows is fine on the far end)
 # ---------------------------------------------------------------------------
 
-async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float = 0.6, max_tokens: int = 150, top_p: float = 0.9, repeat_penalty: float = 1.15, stop: list = None) -> str:
-    payload = json.dumps(
-        {"model": model, "prompt": prompt, "stream": False,
-         "options": {"temperature": float(temperature), "num_predict": int(max_tokens),
-                     "top_p": float(top_p), "repeat_penalty": float(repeat_penalty)},
-         "stop": stop or ["\nbot:", "\nmember:", "\nYou reply:"]}
-    ).encode()
+async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float = 0.6, max_tokens: int = 150, top_p: float = 0.9, repeat_penalty: float = 1.15, stop: list = None, system: str = "") -> str:
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "options": {"temperature": float(temperature), "num_predict": int(max_tokens),
+                        "top_p": float(top_p), "repeat_penalty": float(repeat_penalty)},
+            "stop": stop or ["\nbot:", "\nmember:", "\nYou reply:"]}
+    if system:
+        body["system"] = system
+    payload = json.dumps(body).encode()
 
     def _request():
         req = urllib.request.Request(
@@ -411,7 +443,7 @@ async def ask_ollama(endpoint: str, model: str, prompt: str, temperature: float 
     return response
 
 
-async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens: int = 150, asker: str = "") -> str:
+async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens: int = 150, asker: str = "", system: str = "") -> str:
     """Ask the AI with automatic pool failover + health tracking.
 
     Tries the configured pool endpoints in order (skipping hosts that are
@@ -443,7 +475,7 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
                                       params.get("num_predict", max_tokens),
                                       params.get("top_p", 0.9),
                                       params.get("repeat_penalty", 1.15),
-                                      stop=stop)
+                                      stop=stop, system=system or cfg.get("persona_system", ""))
             pool_record(ep, ok=True)
             return answer
         except ConnectionError as exc:
@@ -602,12 +634,27 @@ POOL_COOLDOWN = 600     # seconds a "down" host is skipped, then retried
 POOL_HEALTH_INTERVAL = 300  # how often the bot pings pool hosts to refresh health
 
 
+# Pool snapshot cache: the full host list is refreshed at most every
+# POOL_SNAPSHOT_TTL seconds instead of on every Discord message, so a burst
+# of chat costs one tiny DB read, not a full-table decrypt per message.
+# Writes (add/remove/set/record) invalidate it immediately.
+POOL_SNAPSHOT_TTL = 30
+_pool_snapshot = {"at": 0.0, "hosts": []}
+
+
+def _pool_snapshot_invalidate():
+    _pool_snapshot["at"] = 0.0
+
+
 def pool_hosters(enabled_only=True):
     """All registered pool contributors, decrypted in memory for routing.
     Returns {id, name, endpoint, model, share, enabled, failed, down_until,
     last_ok, last_fail} with endpoint/model decrypted so the bot can route —
     never shown to anyone as raw values.
     """
+    now = time.time()
+    if enabled_only and _pool_snapshot["hosts"] and now - _pool_snapshot["at"] < POOL_SNAPSHOT_TTL:
+        return [dict(h) for h in _pool_snapshot["hosts"]]
     conn = db()
     rows = conn.execute(
         "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served FROM hosters"
@@ -624,6 +671,9 @@ def pool_hosters(enabled_only=True):
         h["down_until"] = h["down_until"] or ""
         h["served"] = h["served"] or 0
         out.append(h)
+    if enabled_only:
+        _pool_snapshot["hosts"] = [dict(h) for h in out]
+        _pool_snapshot["at"] = now
     return out
 
 
@@ -643,20 +693,32 @@ def pool_record(endpoint, ok: bool):
     """Note success/failure against one host so the pool adapts to computers
     that come and go (laptop lids, dropped links). A run of failures parks the
     host for POOL_COOLDOWN seconds; a success clears it right away."""
-    ep = (endpoint or "").strip().rstrip("/")
-    if not ep:
+    h = _endpoint_hash(endpoint)
+    if not h:
         return
     now = datetime.datetime.now(datetime.timezone.utc)
     conn = db()
-    for r in conn.execute("SELECT id, endpoint FROM hosters WHERE enabled=1").fetchall():
-        stored = maybe_decrypt("pool_endpoint", r["endpoint"] or "").strip().rstrip("/")
-        if stored != ep:
-            continue
-        hid = int(r["id"])
-        if ok:
-            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=?, served=served+1 WHERE id=?",
-                         (now.isoformat(), hid))
-            continue
+    row = conn.execute("SELECT id FROM hosters WHERE enabled=1 AND endpoint_hash=?", (h,)).fetchone()
+    if row is None:
+        # Legacy row without a hash (or unknown endpoint): fall back to one
+        # decrypt-scan, then stamp the hash so next time is indexed.
+        found = None
+        for r in conn.execute("SELECT id, endpoint FROM hosters WHERE enabled=1").fetchall():
+            stored = maybe_decrypt("pool_endpoint", r["endpoint"] or "").strip().rstrip("/")
+            if _endpoint_hash(stored) == h:
+                found = int(r["id"])
+                conn.execute("UPDATE hosters SET endpoint_hash=? WHERE id=?", (h, found))
+                break
+        if found is None:
+            conn.close()
+            return
+        hid = found
+    else:
+        hid = int(row["id"])
+    if ok:
+        conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=?, served=served+1 WHERE id=?",
+                     (now.isoformat(), hid))
+    else:
         conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now.isoformat(), hid))
         fails = conn.execute("SELECT failed FROM hosters WHERE id=?", (hid,)).fetchone()
         if fails and (fails["failed"] or 0) >= POOL_FAIL_DOWN:
@@ -664,20 +726,44 @@ def pool_record(endpoint, ok: bool):
             conn.execute("UPDATE hosters SET down_until=? WHERE id=?", (until, hid))
     conn.commit()
     conn.close()
+    _pool_snapshot_invalidate()
 
 
 def pool_candidates(model="", limit=6):
     """Pool endpoints healthy enough to try, weighted by share, newest-first
     on equal weight. Never picks this machine's own box. Returns ordered
-    list of dicts so the caller can fail over across several hosts."""
+    list of dicts so the caller can fail over across several hosts.
+
+    Scale-safe: healthy/enabled filtering happens in SQL (indexed) and only
+    the top candidates are decrypted — a 100k pool costs the same as a tiny
+    one on the per-message path."""
     own = (get_cfg("host", "ai_endpoint", OLLAMA_BASE_URL) or "").strip().rstrip("/")
-    now = datetime.datetime.now(datetime.timezone.utc)
-    hosted = [h for h in pool_hosters() if _pool_healthy(h, now)]
-    hosted = [h for h in hosted if (h["endpoint"] or "").strip().rstrip("/") != own]
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    n = max(1, min(int(limit or 6), 8))
+    conn = db()
+    # Over-fetch so model-matching + own-box exclusion still leave enough.
+    rows = conn.execute(
+        """SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served
+           FROM hosters WHERE enabled=1 AND (down_until='' OR down_until IS NULL OR down_until<=?)
+           ORDER BY share DESC, id DESC LIMIT ?""",
+        (now, n * 25),
+    ).fetchall()
+    conn.close()
+    hosted = []
+    for r in rows:
+        h = dict(r)
+        h["endpoint"] = maybe_decrypt("pool_endpoint", h["endpoint"] or "")
+        h["model"] = maybe_decrypt("pool_model", h["model"] or "")
+        h["failed"] = h["failed"] or 0
+        h["down_until"] = h["down_until"] or ""
+        h["served"] = h["served"] or 0
+        if (h["endpoint"] or "").strip().rstrip("/") == own:
+            continue
+        hosted.append(h)
     matching = [h for h in hosted if model and h["model"] and model in h["model"]]
     pool = matching or hosted
     picked, remaining = [], list(pool)
-    while remaining and len(picked) < max(1, min(int(limit), 8)):
+    while remaining and len(picked) < n:
         weights = [max(h["share"], 0) or 1 for h in remaining]
         ch = random.choices(remaining, weights=weights, k=1)[0]
         picked.append(ch)
@@ -699,7 +785,7 @@ def pool_add(endpoint, model, share=50, name=None):
     conn = db()
     name = (name or pool_anon_name()).strip()[:80]
     conn.execute(
-        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, endpoint_hash) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
         (
             name or pool_anon_name(),
             maybe_encrypt("pool_endpoint", endpoint),
@@ -707,10 +793,12 @@ def pool_add(endpoint, model, share=50, name=None):
             int(share),
             "bot",
             datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            _endpoint_hash(endpoint),
         ),
     )
     conn.commit()
     conn.close()
+    _pool_snapshot_invalidate()
     return name or pool_anon_name()
 
 
@@ -719,6 +807,7 @@ def pool_remove(hoster_id):
     conn.execute("DELETE FROM hosters WHERE id=?", (int(hoster_id),))
     conn.commit()
     conn.close()
+    _pool_snapshot_invalidate()
 
 
 def pool_set(hoster_id, enabled=None, share=None):
@@ -729,6 +818,7 @@ def pool_set(hoster_id, enabled=None, share=None):
         conn.execute("UPDATE hosters SET share=? WHERE id=?", (max(0, min(100, int(share))), int(hoster_id)))
     conn.commit()
     conn.close()
+    _pool_snapshot_invalidate()
 
 
 def pick_pool_endpoint(model="") -> str:
@@ -751,16 +841,45 @@ def _pool_ping(endpoint: str) -> bool:
 async def pool_health_loop():
     """Keep the pool's view of who's alive current even between AI calls, so a
     computer that sleeps (laptop lid) or drops its link is parked quickly and
-    comes straight back the moment it's reachable again."""
+    comes straight back the moment it's reachable again.
+
+    Scale-safe: checks a rotating sample (not the whole pool) each cycle with
+    bounded concurrency, so 100k hosts cost the same per cycle as 50."""
+    sample = 50
+    offset = 0
     while True:
         await asyncio.sleep(POOL_HEALTH_INTERVAL)
-        hosters = pool_hosters()
-        for h in hosters:
-            ep = (h["endpoint"] or "").strip()
-            if not ep:
-                continue
-            ok = await asyncio.to_thread(_pool_ping, ep)
-            pool_record(ep, ok)
+        try:
+            conn = db()
+            rows = conn.execute(
+                "SELECT id, endpoint FROM hosters WHERE enabled=1 ORDER BY id LIMIT ? OFFSET ?",
+                (sample, offset),
+            ).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM hosters WHERE enabled=1").fetchone()[0]
+            conn.close()
+        except Exception:
+            continue
+        if not rows:
+            offset = 0
+            continue
+        offset = (offset + sample) % max(total, 1)
+        eps = []
+        for r in rows:
+            ep = maybe_decrypt("pool_endpoint", r["endpoint"] or "").strip()
+            if ep:
+                eps.append(ep)
+        sem = asyncio.Semaphore(10)
+
+        async def _one(ep):
+            async with sem:
+                return ep, await asyncio.to_thread(_pool_ping, ep)
+
+        for coro in asyncio.as_completed([_one(ep) for ep in eps]):
+            try:
+                ep, ok = await coro
+                await asyncio.to_thread(pool_record, ep, ok)
+            except Exception:
+                pass
 
 
 def usage_bucket(window: int) -> str:
@@ -1036,29 +1155,29 @@ def profile_lines(guild_id, user_ids) -> list:
 
 
 def build_prompt(persona, context, question, instructions="", member_profiles=None, asker_name="member"):
-    """Build the final LLM prompt.
+    """Build the LLM prompts, split for Ollama's system/prompt roles.
 
-    ``context`` is a list of dicts {"role","user_id","name","text"} from
-    MemoryBank. ``member_profiles`` is a list of "name — likes X" strings from
-    profile_lines(), shown so the model knows who's who without being told to
-    guess facts.
+    Returns (system, user_prompt): the persona, date, reply rules, member
+    notes and server rules go in ``system`` (hierarchy the model respects);
+    only the conversation history + current question go in the user prompt.
+    The old single-blob layout let small models echo instructions back, so
+    history lines are also capped short here.
     """
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%B %d, %Y")
-    lines = [
+    sys_lines = [
         persona.strip(),
         "",
         f"Today is {today} (UTC). Use it for anything time-related; never guess dates.",
         "Reply in 1-2 Discord sentences, <=45 words. Answer directly. "
         "If unsure, say so in 5 words. Never end with a question.",
-        "The messages below are from real members of a Discord server.",
     ]
     if member_profiles:
-        lines += ["", "MEMBER NOTES (background only — use silently, never recite unless asked):"]
+        sys_lines += ["", "MEMBER NOTES (background only — use silently, never recite unless asked):"]
         for line in member_profiles[:4]:
-            lines.append(f"- {line}")
+            sys_lines.append(f"- {line}")
     if instructions:
-        lines += ["", "SERVER RULES (highest priority):", "<<<", instructions[:600].strip(), ">>>"]
-    lines += ["", "History (oldest first, 'bot:' is you):"]
+        sys_lines += ["", "SERVER RULES (highest priority):", "<<<", instructions[:600].strip(), ">>>"]
+    hist = ["History (oldest first, 'bot:' is you):"]
     for m in context[-8:]:
         if m["role"] == "bot":
             who = "bot"
@@ -1068,9 +1187,9 @@ def build_prompt(persona, context, question, instructions="", member_profiles=No
             except (ValueError, TypeError):
                 uid = 0
             who = f"{m.get('name') or 'member'}[{uid % 10000:04d}]"
-        lines.append(f"{who}: {(m.get('text') or '')[:200]}")
-    lines += ["", f"{asker_name}: {(question or '')[:300]}", "bot:"]
-    return "\n".join(lines)
+        hist.append(f"{who}: {(m.get('text') or '')[:160]}")
+    hist += ["", f"{asker_name}: {(question or '')[:300]}", "bot:"]
+    return "\n".join(sys_lines), "\n".join(hist)
 
 
 # ---------------------------------------------------------------------------
@@ -1154,6 +1273,8 @@ async def human_type(channel, text, mention=""):
     optional ``mention`` (e.g. a user ping) is glued to the first chunk.
     """
     text = (text or "").strip()
+    # Models sometimes echo the "bot:" stop token — strip it, not the reply.
+    text = re.sub(r"^(bot\s*:\s*)", "", text, flags=re.I).strip()
     # Truncate to the last full sentence under 400 chars so a num_predict
     # cutoff never posts half-words.
     if len(text) > 400:
@@ -1224,6 +1345,32 @@ async def _ai_error_notice(channel, guild_id, text: str, cooldown: int = 120):
         pass
 
 
+# Flood guard (abuse protection without quotas): per-user and per-guild
+# sliding windows. Quotas default to unlimited — the pool absorbs load by
+# queueing (slow replies under pressure, never a crash) — and this stops one
+# person or server from hogging the single AI worker. In-memory: a restart
+# resets windows, which is fine for abuse control.
+FLOOD_USER_PER_MIN = 5
+FLOOD_GUILD_PER_MIN = 20
+_flood_hits = {}
+
+
+def flood_ok(guild_id, user_id) -> bool:
+    """True if this user/guild may queue another AI call right now."""
+    now = time.time()
+    for key, limit in ((f"u:{guild_id}:{user_id}", FLOOD_USER_PER_MIN),
+                       (f"g:{guild_id}", FLOOD_GUILD_PER_MIN)):
+        hits = [t for t in _flood_hits.get(key, []) if now - t < 60]
+        if len(hits) >= limit:
+            _flood_hits[key] = hits
+            return False
+        hits.append(now)
+        _flood_hits[key] = hits
+    if len(_flood_hits) > 5000:
+        _flood_hits.clear()
+    return True
+
+
 async def ai_reply(message: discord.Message, *, ping: bool = True):
     """Passive AI chat: reply to an @-mention, or (ping=False) to a plain
     follow-up while conversation mode is active.
@@ -1241,6 +1388,10 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
     if not quota_ok(guild_id, cfg["quota"], cfg["window"]):
         await _quota_notice(message)
         return False
+    if not flood_ok(guild_id, message.author.id):
+        await _ai_error_notice(message.channel, guild_id,
+                               "⏳ Slow down — too many AI requests at once. Try again in a minute.")
+        return False
 
     me_id = message.guild.me.id if message.guild.me else None
     raw = message.content[:400]
@@ -1250,10 +1401,10 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
     asker = message.author.display_name or "member"
     context = memory.context(guild_id, message.channel.id, cfg["memory"])
     profiles = profile_lines(guild_id, [m.get("user_id") for m in context] + [message.author.id])
-    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profiles, asker_name=asker)
+    persona_system, full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profiles, asker_name=asker)
 
     async def factory():
-        return await ask_ollama_any(cfg, full_prompt, asker=asker)
+        return await ask_ollama_any(cfg, full_prompt, asker=asker, system=persona_system)
 
     fut = ai_queue.submit(guild_id, factory)
     async with message.channel.typing():
@@ -1341,14 +1492,17 @@ async def dm_chat(channel, question, cfg, mention="", user_id="", name=""):
             "Keep chatting after that, or raise the limit in the web panel."
         )
         return
+    if not flood_ok("dm", user_id or channel.id):
+        await channel.send("⏳ Slow down — too many AI requests at once. Try again in a minute.")
+        return
 
     context = memory.context("dm", channel.id, cfg["memory"])
     who = [m.get("user_id") for m in context]
     asker = name or "member"
-    full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profile_lines("dm", who), asker_name=asker)
+    persona_system, full_prompt = build_prompt(cfg["persona"], context, question, cfg["instructions"], profile_lines("dm", who), asker_name=asker)
 
     async def factory():
-        return await ask_ollama_any(cfg, full_prompt, asker=asker)
+        return await ask_ollama_any(cfg, full_prompt, asker=asker, system=persona_system)
 
     fut = ai_queue.submit("dm", factory)
     try:
@@ -2366,6 +2520,12 @@ async def ask(interaction: discord.Interaction, prompt: str):
             ephemeral=True,
         )
         return
+    if not flood_ok(interaction.guild.id, interaction.user.id):
+        await interaction.response.send_message(
+            "⏳ Slow down — too many AI requests at once. Try again in a minute.",
+            ephemeral=True,
+        )
+        return
     if not channel_allowed(interaction.guild.id, interaction.channel.id, cfg):
         await interaction.response.send_message(
             "AI chat is switched off in this channel — it's only allowed in the channels picked in the dashboard.",
@@ -2380,12 +2540,12 @@ async def ask(interaction: discord.Interaction, prompt: str):
     try:
         context = memory.context(interaction.guild.id, interaction.channel.id, cfg["memory"])
         profiles = profile_lines(interaction.guild.id, [m.get("user_id") for m in context] + [interaction.user.id])
-        full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"], profiles, asker_name=interaction.user.display_name)
+        persona_system, full_prompt = build_prompt(cfg["persona"], context, prompt, cfg["instructions"], profiles, asker_name=interaction.user.display_name)
     except Exception:
-        full_prompt = prompt[:400]
+        persona_system, full_prompt = "", prompt[:400]
 
     async def factory():
-        return await ask_ollama_any(cfg, full_prompt, asker=interaction.user.display_name)
+        return await ask_ollama_any(cfg, full_prompt, asker=interaction.user.display_name, system=persona_system)
 
     fut = ai_queue.submit(interaction.guild.id, factory)
     try:
@@ -2452,6 +2612,12 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
             ephemeral=True,
         )
         return
+    if not flood_ok(interaction.guild.id, interaction.user.id):
+        await interaction.response.send_message(
+            "⏳ Slow down — too many AI requests at once. Try again in a minute.",
+            ephemeral=True,
+        )
+        return
     limit = max(1, min(limit, 60))
     await interaction.response.defer(thinking=True)
     texts = []
@@ -2472,7 +2638,8 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         prompt += "\n\nFollow these server instructions where relevant:\n" + cfg["instructions"]
 
     async def factory():
-        return await ask_ollama_any(cfg, prompt, asker="summary")
+        return await ask_ollama_any(cfg, prompt, asker="summary",
+                                    system="Summarize chat messages in a few short neutral bullets.")
 
     fut = ai_queue.submit(interaction.guild.id, factory)
     try:

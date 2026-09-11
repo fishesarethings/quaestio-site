@@ -145,9 +145,19 @@ def _migrate_pool_health(conn):
     for col, ddl in (("failed", "ALTER TABLE hosters ADD COLUMN failed INTEGER DEFAULT 0"),
                      ("down_until", "ALTER TABLE hosters ADD COLUMN down_until TEXT DEFAULT ''"),
                      ("last_ok", "ALTER TABLE hosters ADD COLUMN last_ok TEXT DEFAULT ''"),
-                     ("last_fail", "ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''")):
+                     ("last_fail", "ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''"),
+                     ("endpoint_hash", "ALTER TABLE hosters ADD COLUMN endpoint_hash TEXT DEFAULT ''")):
         if col not in cols:
             conn.execute(ddl)
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_hosters_enabled ON hosters(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_hash ON hosters(endpoint_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_down ON hosters(down_until)",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
 
 
 def _migrate_pool_broker(conn):
@@ -472,6 +482,12 @@ async def guild_refs(guild_id: str) -> dict:
                 pass
     REF_CACHE[guild_id] = out
     REF_CACHE_AT[guild_id] = now
+    # Bound the caches so a flood of guild IDs can't grow them forever.
+    if len(REF_CACHE) > 500:
+        oldest = sorted(REF_CACHE_AT, key=lambda k: REF_CACHE_AT[k])[:100]
+        for k in oldest:
+            REF_CACHE.pop(k, None)
+            REF_CACHE_AT.pop(k, None)
     return out
 
 
@@ -487,8 +503,9 @@ async def api_models(request: Request, guild_id: int):
     managed = get_cfg("host", "host_mode", "managed") != "decentral"
     endpoint = model_fallback(guild_id)
     try:
-        with urllib.request.urlopen(f"{endpoint}/api/tags", timeout=6) as resp:
-            data = json.loads(resp.read().decode())
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.get(f"{endpoint}/api/tags")
+            data = r.json()
         names = [m["name"] for m in data.get("models", []) if m.get("name") and m["name"] in ALLOWED_MODELS]
         return {"endpoint": "" if managed else endpoint, "models": names}
     except Exception as exc:
@@ -803,6 +820,32 @@ def _node_secret_hash(secret: str) -> str:
     return hashlib.sha256(("quaestio-node:" + secret).encode()).hexdigest()
 
 
+# Broker abuse guard: per-IP sliding window so a flood of fake registrations
+# can't fill the pool table (100k junk rows would slow every routing query).
+_BROKER_HITS = {}
+BROKER_RATE_LIMIT = 30  # requests per IP per 60s on pool write endpoints
+
+
+def _broker_ok(request: Request) -> bool:
+    try:
+        ip = (request.client.host if request.client else "?") or "?"
+    except Exception:
+        ip = "?"
+    now = time.time()
+    hits = _BROKER_HITS.get(ip, [])
+    hits = [t for t in hits if now - t < 60]
+    if len(hits) >= BROKER_RATE_LIMIT:
+        _BROKER_HITS[ip] = hits
+        return False
+    hits.append(now)
+    # Bound the tracker itself so it can't grow forever.
+    if len(_BROKER_HITS) > 5000:
+        _BROKER_HITS.clear()
+    else:
+        _BROKER_HITS[ip] = hits
+    return True
+
+
 @app.post("/api/pool/register")
 async def api_pool_register(request: Request):
     """One-click pool join. Proof of the pool join key registers you as an
@@ -810,15 +853,25 @@ async def api_pool_register(request: Request):
     enables you from the panel. Either way the node gets an anonymous name and
     a secret it must keep to update or leave. Endpoints/models are encrypted
     at rest and only the bot can decrypt them."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
     key = (request.headers.get("x-pool-key") or "").strip()
     has_key = bool(POOL_JOIN_KEY) and key == POOL_JOIN_KEY
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
     endpoint = (body.get("endpoint") or "").strip()
-    if not endpoint:
-        raise HTTPException(400, "endpoint is required")
-    model = (body.get("model") or "").strip() or "default"
-    share = max(1, min(100, int(body.get("share", 50) or 50)))
+    if not endpoint or len(endpoint) > 200 or not endpoint.startswith(("http://", "https://")):
+        raise HTTPException(400, "endpoint must be an http(s) URL")
+    model = (body.get("model") or "").strip()[:80] or "default"
+    try:
+        share = max(1, min(100, int(body.get("share", 50) or 50)))
+    except (ValueError, TypeError):
+        share = 50
     secret = (body.get("node_secret") or "").strip()
+    import hashlib as _hl
+    ehash = _hl.sha256(endpoint.strip().rstrip("/").lower().encode()).hexdigest()
     conn = db()
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if secret:
@@ -829,9 +882,9 @@ async def api_pool_register(request: Request):
         if row:
             enabled = 1 if has_key else int(row["enabled"] or 0)
             conn.execute(
-                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=?, at=? WHERE id=?",
+                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=?, at=?, endpoint_hash=? WHERE id=?",
                 (qconfig.maybe_encrypt("pool_endpoint", endpoint),
-                 qconfig.maybe_encrypt("pool_model", model), share, enabled, now, row["id"]),
+                 qconfig.maybe_encrypt("pool_model", model), share, enabled, now, ehash, row["id"]),
             )
             conn.commit()
             conn.close()
@@ -841,10 +894,10 @@ async def api_pool_register(request: Request):
     new_secret = secrets.token_urlsafe(24)
     enabled = 1 if has_key else 0
     conn.execute(
-        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash)"
-        " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?)",
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash, endpoint_hash)"
+        " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?, ?)",
         (name, qconfig.maybe_encrypt("pool_endpoint", endpoint),
-         qconfig.maybe_encrypt("pool_model", model), share, enabled, now, _node_secret_hash(new_secret)),
+         qconfig.maybe_encrypt("pool_model", model), share, enabled, now, _node_secret_hash(new_secret), ehash),
     )
     conn.commit()
     conn.close()
@@ -867,18 +920,23 @@ async def api_pool_unregister(request: Request):
 
 
 @app.get("/api/pool/nodes")
-async def api_pool_nodes(request: Request):
+async def api_pool_nodes(request: Request, limit: int = 100, offset: int = 0):
     """Candidates for the shared bot. Bot-token only: endpoints/models are
-    decrypted here in memory and never stored or echoed elsewhere."""
+    decrypted here in memory and never stored or echoed elsewhere.
+    Paginated so a 100k pool doesn't dump the whole table in one response."""
     if not BOT_TOKEN or _bearer_token(request) != BOT_TOKEN:
         raise HTTPException(401, "Bot token required")
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
     conn = db()
+    total = conn.execute("SELECT COUNT(*) FROM hosters WHERE enabled=1").fetchone()[0]
     rows = conn.execute(
         "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served"
-        " FROM hosters WHERE enabled=1 ORDER BY name"
+        " FROM hosters WHERE enabled=1 ORDER BY name LIMIT ? OFFSET ?",
+        (limit, offset),
     ).fetchall()
     conn.close()
-    return {"nodes": [
+    return {"total": total, "limit": limit, "offset": offset, "nodes": [
         {
             "id": r["id"], "name": r["name"],
             "endpoint": qconfig.maybe_decrypt("pool_endpoint", r["endpoint"] or ""),
