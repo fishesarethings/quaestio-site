@@ -55,7 +55,7 @@ def _safe_int_env(name: str, default: int) -> int:
         return default
 
 
-OLLAMA_TIMEOUT = _safe_int_env("OLLAMA_TIMEOUT", 180)
+OLLAMA_TIMEOUT = max(10, min(_safe_int_env("OLLAMA_TIMEOUT", 180), 600))
 DB_PATH = os.environ.get("DB_PATH", "quaestio.db")
 PREFIX = os.environ.get("PREFIX", "/")
 WARN_LIMIT_DEFAULT = _safe_int_env("WARN_LIMIT", 3)
@@ -408,6 +408,21 @@ def get_cfg(guild_id, key, default=None):
     return maybe_decrypt(key, row["value"])
 
 
+def get_all_cfg(guild_id, keys, defaults=None):
+    """Batch-fetch config keys in one round-trip (per-message hot path)."""
+    defaults = defaults or {}
+    conn = db()
+    try:
+        rows = conn.execute(
+            f"SELECT key, value FROM config WHERE guild_id=? AND key IN ({','.join('?' * len(keys))})",
+            [str(guild_id), *keys],
+        ).fetchall()
+    finally:
+        conn.close()
+    found = {r["key"]: maybe_decrypt(r["key"], r["value"]) for r in rows}
+    return {k: found.get(k, defaults.get(k)) for k in keys}
+
+
 def set_cfg(guild_id, key, value):
     conn = db()
     conn.execute(
@@ -588,16 +603,27 @@ def guild_ai_config(guild_id):
                 own endpoint, memory and quota, and may share the box with the
                 community pool (ai_contribute).
     """
-    host = lambda k, d: get_cfg("host", k, d)
-    managed = get_cfg("host", "host_mode", "managed") != "decentral"
-    source = (get_cfg(guild_id, "ai_source", "shared") or "shared").strip().lower()
-    _pers = (get_cfg(guild_id, "ai_personality", "none") or "none")
-    _char = (get_cfg(guild_id, "ai_character", "") or "")
+    # Two round-trips total (was ~15 sequential opens on the per-message path).
+    _GKEYS = ["ai_source", "ai_personality", "ai_character", "ai_model", "ai_enabled",
+              "ai_instructions", "ai_channels", "ai_mention", "ai_temperature",
+              "ai_max_tokens", "ai_window", "ai_contribute", "ai_conv",
+              "ai_conv_minutes", "ai_endpoint", "ai_memory", "ai_quota"]
+    g = get_all_cfg(guild_id, _GKEYS, {k: "" for k in _GKEYS})
+    _HKEYS = ["host_mode", "ai_model", "ai_endpoint", "ai_memory", "ai_quota"]
+    h = get_all_cfg("host", _HKEYS, {"host_mode": "managed"})
+    host = lambda k, d: h.get(k, d if d is not None else "")
+    managed = (h.get("host_mode", "managed") or "managed") != "decentral"
+    source = (g.get("ai_source") or "shared").strip().lower()
+    _pers = (g.get("ai_personality") or "none")
+    _char = (g.get("ai_character") or "")
+
+    def _flag(v, default="1"):
+        return str(v if v not in (None, "") else default).strip().lower() not in ("", "0", "false", "none")
 
     base = {
-        "model": get_cfg(guild_id, "ai_model", host("ai_model", OLLAMA_MODEL)),
-        "enabled": flag_on(guild_id, "ai_enabled", "1"),
-        "instructions": get_cfg(guild_id, "ai_instructions", ""),
+        "model": g.get("ai_model") or host("ai_model", OLLAMA_MODEL),
+        "enabled": _flag(g.get("ai_enabled"), "1"),
+        "instructions": g.get("ai_instructions") or "",
         "persona": persona_from(
             _pers,
             _char,
@@ -605,25 +631,25 @@ def guild_ai_config(guild_id):
             guild_presets(guild_id, "character"),
         ),
         "persona_params": persona_params_for(_pers, _char),
-        "ai_channels": get_cfg(guild_id, "ai_channels", ""),
-        "ai_mention": flag_on(guild_id, "ai_mention", "1"),
-        "temperature": _safe_float(get_cfg(guild_id, "ai_temperature", "0.6"), 0.6),
-        "max_tokens": _safe_int(get_cfg(guild_id, "ai_max_tokens", "150"), 150),
-        "window": max(1, _safe_int(get_cfg(guild_id, "ai_window", "6"), 6)),
+        "ai_channels": g.get("ai_channels") or "",
+        "ai_mention": _flag(g.get("ai_mention"), "1"),
+        "temperature": _safe_float(g.get("ai_temperature"), 0.6),
+        "max_tokens": _safe_int(g.get("ai_max_tokens"), 150),
+        "window": max(1, _safe_int(g.get("ai_window"), 6)),
         "source": source,
-        "contribute": flag_on(guild_id, "ai_contribute", "0"),
+        "contribute": _flag(g.get("ai_contribute"), "0"),
         # Conversation mode: once the bot replies it "stays" for a few minutes,
         # so members can keep chatting without @mentioning it again. On by
         # default; only a real @mentions it wakes it back up.
-        "conv": flag_on(guild_id, "ai_conv", "1"),
-        "conv_minutes": max(1, _safe_int(get_cfg(guild_id, "ai_conv_minutes", "3"), 3)),
+        "conv": _flag(g.get("ai_conv"), "1"),
+        "conv_minutes": max(1, _safe_int(g.get("ai_conv_minutes"), 3)),
     }
 
     if source == "self":
-        base["endpoint"] = (get_cfg(guild_id, "ai_endpoint", "") or OLLAMA_BASE_URL).strip()
-        base["model"] = get_cfg(guild_id, "ai_model", OLLAMA_MODEL)
-        base["memory"] = max(1, _safe_int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT), MEMORY_DEFAULT))
-        base["quota"] = max(0, _safe_int(get_cfg(guild_id, "ai_quota", "0"), 0))
+        base["endpoint"] = (g.get("ai_endpoint") or OLLAMA_BASE_URL).strip()
+        base["model"] = g.get("ai_model") or OLLAMA_MODEL
+        base["memory"] = max(1, _safe_int(g.get("ai_memory"), MEMORY_DEFAULT))
+        base["quota"] = max(0, _safe_int(g.get("ai_quota"), 0))
         base["contributor_perks"] = bool(base["contribute"] and base["endpoint"])
         return base
 
@@ -634,8 +660,8 @@ def guild_ai_config(guild_id):
         endpoint = pool_eps[0]
     host_memory = max(1, _safe_int(host("ai_memory", MEMORY_DEFAULT), MEMORY_DEFAULT))
     host_quota = max(0, _safe_int(host("ai_quota", "0"), 0))
-    memory = max(1, _safe_int(get_cfg(guild_id, "ai_memory", host_memory), host_memory))
-    quota = max(0, _safe_int(get_cfg(guild_id, "ai_quota", host_quota), host_quota))
+    memory = max(1, _safe_int(g.get("ai_memory"), host_memory))
+    quota = max(0, _safe_int(g.get("ai_quota"), host_quota))
     if managed:
         if host_memory:
             memory = min(memory, host_memory)
@@ -645,8 +671,8 @@ def guild_ai_config(guild_id):
     # Failover chain for shared boxes: other healthy pool hosts first, then the
     # host's own box as the last resort. See ask_ollama_any().
     base["fallbacks"] = [e for e in pool_eps[1:] if e and e != endpoint]
-    own_ep = (get_cfg("host", "ai_endpoint", "") or OLLAMA_BASE_URL or "").strip()
-    own_box = (get_cfg(guild_id, "ai_endpoint", "") or "").strip()
+    own_ep = (h.get("ai_endpoint") or OLLAMA_BASE_URL or "").strip()
+    own_box = (g.get("ai_endpoint") or "").strip()
     if base["contribute"] and own_box and own_box not in [endpoint, *base["fallbacks"]]:
         # Contributor perk: their own box goes FIRST (lowest latency for them,
         # and their server keeps working even if the pool is down).
@@ -1396,8 +1422,11 @@ class FairAIQueue:
                     if fut.cancelled():
                         continue
                     try:
+                        # Worker budget slightly UNDER the waiter budget so the
+                        # factory is cancelled first — no orphan run hogging
+                        # the single worker after the user was told "too long".
                         result = await asyncio.wait_for(
-                            factory(), timeout=OLLAMA_TIMEOUT + 60
+                            factory(), timeout=OLLAMA_TIMEOUT + 25
                         )
                         if not fut.done():
                             fut.set_result(result)
@@ -1777,9 +1806,9 @@ def xp_word_count(content: str) -> int:
 def xp_allowed(guild_id, user_id, content) -> bool:
     if not flag_on(guild_id, "xp_spam", "1"):
         return True
-    min_w = int(get_cfg(guild_id, "xp_min_words") or 3)
-    max_w = int(get_cfg(guild_id, "xp_max_words") or 100)
-    cooldown = float(get_cfg(guild_id, "xp_cooldown") or 5)
+    min_w = _safe_int(get_cfg(guild_id, "xp_min_words"), 3)
+    max_w = _safe_int(get_cfg(guild_id, "xp_max_words"), 100)
+    cooldown = _safe_float(get_cfg(guild_id, "xp_cooldown"), 5.0)
     if xp_word_count(content) not in range(min_w, max_w + 1):
         return False
     now = time.monotonic()
@@ -1974,8 +2003,13 @@ async def about(interaction: discord.Interaction):
 
 @bot.tree.command(name="invite", description="Invite Quaestio to another server.")
 async def invite(interaction: discord.Interaction):
-    app = await bot.application_info()
-    await interaction.response.send_message(
+    await interaction.response.defer(thinking=False, ephemeral=True)
+    try:
+        app = await bot.application_info()
+    except discord.HTTPException:
+        await interaction.followup.send("Couldn't build the invite link right now.", ephemeral=True)
+        return
+    await interaction.followup.send(
         f"📨 Invite me here: https://discord.com/oauth2/authorize?client_id={app.id}&permissions=1101994781766&scope=bot",
         ephemeral=True,
     )
@@ -2060,6 +2094,9 @@ async def help_cmd(interaction: discord.Interaction):
 @bot.tree.command(name="userinfo", description="Look up a member's profile.")
 @app_commands.describe(member="Which member? Defaults to you.")
 async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/userinfo` inside a server.", ephemeral=True)
+        return
     member = member or interaction.user
     roles = [r.mention for r in reversed(member.roles) if r != member.guild.default_role]
     embed = discord.Embed(
@@ -2086,6 +2123,9 @@ async def userinfo(interaction: discord.Interaction, member: discord.Member = No
 
 @bot.tree.command(name="serverinfo", description="See stats about this server.")
 async def serverinfo(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/serverinfo` inside a server.", ephemeral=True)
+        return
     guild = interaction.guild
     embed = discord.Embed(title=guild.name, color=0xA78BFA)
     if guild.icon:
@@ -2210,12 +2250,22 @@ async def reminder_loop():
         now = time.time()
         for r in [r for r in _reminders if r["at"] <= now]:
             _reminders.remove(r)
-            channel = bot.get_channel(r["channel_id"])
-            if channel:
-                try:
-                    await channel.send(f"{r['mention']} ⏰ **Reminder:** {r['what']}")
-                except discord.Forbidden:
-                    pass
+            try:
+                channel = bot.get_channel(r["channel_id"])
+                if channel is None and r.get("user_id"):
+                    # DM reminder: open the DM channel (get_channel can't).
+                    try:
+                        user = await bot.fetch_user(int(r["user_id"]))
+                        channel = user.dm_channel or await user.create_dm()
+                    except (discord.NotFound, discord.HTTPException, ValueError):
+                        channel = None
+                if channel:
+                    try:
+                        await channel.send(f"{r['mention']} ⏳ **Reminder:** {r['what']}")
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+            except Exception:
+                pass
         await asyncio.sleep(20)
 
 
@@ -2227,6 +2277,7 @@ async def remind(interaction: discord.Interaction, what: str, minutes: int):
     _reminders.append({
         "at": time.time() + minutes * 60,
         "channel_id": channel_id,
+        "user_id": interaction.user.id,
         "mention": interaction.user.mention,
         "what": what[:300],
     })
@@ -2339,14 +2390,11 @@ async def trivia(interaction: discord.Interaction):
 
 @bot.tree.command(name="answer", description="Answer the running trivia question.")
 async def answer(interaction: discord.Interaction, answer_text: str):
-    if interaction.guild is None:
-        await interaction.response.send_message("Trivia only runs in servers.", ephemeral=True)
-        return
-    key = (interaction.guild.id, interaction.channel.id)
+    key = (interaction.guild.id if interaction.guild else "dm", interaction.channel.id)
     entry = _trivia_answer_at.get(key)
     if not entry:
         await interaction.response.send_message(
-            "No trivia question is running in this channel. Try `/trivia` first.",
+            "No trivia question is running here. Try `/trivia` first.",
             ephemeral=True,
         )
         return
@@ -2662,6 +2710,9 @@ async def ai_clear(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Use `/ai clear` inside a server channel.", ephemeral=True)
         return
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("Needs Administrator.", ephemeral=True)
+        return
     memory.clear(interaction.guild.id, interaction.channel.id)
     await interaction.response.send_message("🧹 Memory cleared for this channel.", ephemeral=True)
 
@@ -2669,6 +2720,7 @@ async def ai_clear(interaction: discord.Interaction):
 @bot.tree.command(name="pool", description="See the community pool + what contributors earn.")
 async def pool_info(interaction: discord.Interaction):
     """Anonymous pool stats and the contributor perk pitch (no identities)."""
+    await interaction.response.defer(thinking=False, ephemeral=True)
     try:
         nodes = pool_candidates("", limit=8)
         total = pool_total_share()
@@ -2695,7 +2747,7 @@ async def pool_info(interaction: discord.Interaction):
                              f"and a contributor badge. Anonymous — random node ID only.")
         except Exception:
             pass
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 
 def _remember_reply(interaction, answer, prompt):
@@ -2716,6 +2768,10 @@ async def ask(interaction: discord.Interaction, prompt: str):
             await dm_chat(interaction.channel, prompt[:400], host_cfg(),
                           mention=interaction.user.mention,
                           user_id=interaction.user.id, name=interaction.user.display_name)
+            try:
+                await interaction.followup.send("Answered above 👆", ephemeral=True)
+            except discord.HTTPException:
+                pass
         except Exception:  # noqa: BLE001 — never leave an interaction stuck
             try:
                 await interaction.followup.send("```⚠️ Something went wrong. Try again in a moment.```", ephemeral=True)
@@ -3007,7 +3063,11 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         try:
             await member.kick(reason=f"Reached warn limit ({count}).")
         except discord.Forbidden:
-            pass
+            await interaction.followup.send("Auto-kick failed — I lack permission.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send("Auto-kick failed — check my role position.", ephemeral=True)
+            return
         await interaction.followup.send(f"{member.display_name} auto-kicked (warn limit).")
 
 
@@ -3100,24 +3160,25 @@ async def unban(interaction: discord.Interaction, user: str):
     if not is_admin(interaction.user):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
+    await interaction.response.defer(thinking=False, ephemeral=True)
     try:
         banned = [entry async for entry in interaction.guild.bans()]
     except (discord.Forbidden, discord.HTTPException):
-        await interaction.response.send_message("I can't see the ban list.", ephemeral=True)
+        await interaction.followup.send("I can't see the ban list.", ephemeral=True)
         return
     q = user.strip().lower()
     target = next((e for e in banned
                    if q == str(e.user).lower() or q == str(e.user.id)
                    or q == getattr(e.user, "name", "").lower()), None)
     if target is None:
-        await interaction.response.send_message(f"No banned user matching `{user}`.", ephemeral=True)
+        await interaction.followup.send(f"No banned user matching `{user}`.", ephemeral=True)
         return
     try:
         await interaction.guild.unban(target.user, reason="Quaestio unban")
     except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-        await interaction.response.send_message("Unban failed.", ephemeral=True)
+        await interaction.followup.send("Unban failed.", ephemeral=True)
         return
-    await interaction.response.send_message(f"🔓 Unbanned {target.user}.")
+    await interaction.followup.send(f"🔓 Unbanned {target.user}.")
 
 
 @bot.tree.command(name="purge", description="Bulk-delete recent messages.")
@@ -3130,12 +3191,13 @@ async def purge(interaction: discord.Interaction, count: int = 20):
         await interaction.response.send_message("Needs Administrator.", ephemeral=True)
         return
     count = max(1, min(count, 100))
+    await interaction.response.defer(thinking=False, ephemeral=True)
     try:
         deleted = await interaction.channel.purge(limit=count)
     except (discord.Forbidden, discord.HTTPException):
-        await interaction.response.send_message("I can't delete messages here.", ephemeral=True)
+        await interaction.followup.send("I can't delete messages here.", ephemeral=True)
         return
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"🧹 Purged {len(deleted)} messages.", ephemeral=True
     )
 
@@ -3290,7 +3352,7 @@ async def bday_set(interaction: discord.Interaction, month: int, day: int):
         """INSERT INTO birthdays (guild_id, user_id, month, day) VALUES (?, ?, ?, ?)
            ON CONFLICT(guild_id, user_id)
            DO UPDATE SET month=excluded.month, day=excluded.day""",
-        (str(interaction.guild.id), str(interaction.user.id), str(month), str(day)),
+        (str(interaction.guild.id), str(interaction.user.id), f"{month:02d}", f"{day:02d}"),
     )
     conn.commit()
     conn.close()
@@ -3338,31 +3400,39 @@ async def bday_list(interaction: discord.Interaction):
 async def announce_birthdays(month_day: str):
     """Post in every guild's birthday channel for the people with a birthday today."""
     month, day = month_day.split("-")
+    # Match both zero-padded ("09") and legacy bare ("9") stored values.
     conn = db()
-    rows = conn.execute(
-        "SELECT guild_id, user_id FROM birthdays WHERE month=? AND day=?",
-        (month, day),
-    ).fetchall()
+    rows = conn.execute("SELECT guild_id, user_id, month, day FROM birthdays").fetchall()
     conn.close()
     for r in rows:
-        gid = r["guild_id"]
-        if not flag_on(gid, "birthday_enabled", "0"):
-            continue
-        channel_id = get_cfg(gid, "birthday_channel", "")
-        if not channel_id:
-            continue
-        guild = bot.get_guild(int(gid))
-        channel = guild.get_channel(int(channel_id)) if guild else None
-        if not channel:
-            continue
-        member = guild.get_member(int(r["user_id"])) if guild else None
         try:
-            await channel.send(
-                f"🎂🎉 Happy birthday <@{r['user_id']}>!"
-                + (f" Have an amazing day, **{member.display_name}**! 🎈" if member else "")
-            )
-        except discord.Forbidden:
-            pass
+            if int(r["month"]) != int(month) or int(r["day"]) != int(day):
+                continue
+        except (ValueError, TypeError):
+            continue
+        try:
+            gid = r["guild_id"]
+            if not flag_on(gid, "birthday_enabled", "0"):
+                continue
+            channel_id = get_cfg(gid, "birthday_channel", "")
+            if not channel_id or not str(channel_id).strip().isdigit():
+                continue
+            if not str(gid).strip().isdigit():
+                continue
+            guild = bot.get_guild(int(gid))
+            channel = guild.get_channel(int(channel_id)) if guild else None
+            if not channel:
+                continue
+            member = guild.get_member(int(r["user_id"])) if guild else None
+            try:
+                await channel.send(
+                    f"🎂🎉 Happy birthday <@{r['user_id']}>!"
+                    + (f" Have an amazing day, **{member.display_name}**! 🎈" if member else "")
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        except Exception:
+            continue
 
 
 async def birthday_loop():
