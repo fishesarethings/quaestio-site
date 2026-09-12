@@ -243,10 +243,10 @@ class Components(_NavScreen):
         with Vertical(id="body"):
             yield Static("  [b]What should this box do?[/b]", classes="title")
             yield Static("  Quaestio's shared bot runs centrally — this box only adds compute.", classes="sub")
-            ai = Checkbox("AI engine — Ollama + a local model (~1 GB). Required to host in the pool.", value=cfg.ai, id="ai")
-            web = Checkbox("Admin web panel — a browser UI for settings. Optional.", value=cfg.web, id="web")
-            pool = Checkbox("Join the community pool — Quaestio routes AI requests to your box randomly. Anonymous + encrypted.", value=cfg.pool, id="pool")
-            autostart = Checkbox("Start on login / after reboot — keeps your box serving the pool.", value=cfg.autostart, id="autostart")
+            ai = Checkbox("AI engine — Ollama + a local model (~1 GB). Needed for pool hosting.", value=cfg.ai, id="ai")
+            web = Checkbox("Admin web panel — browser UI for settings.", value=cfg.web, id="web")
+            pool = Checkbox("Join the community pool — earn priority routing + 3x limits.", value=cfg.pool, id="pool")
+            autostart = Checkbox("Start on login — keeps serving after reboot.", value=cfg.autostart, id="autostart")
             yield ai
             yield web
             yield pool
@@ -254,10 +254,20 @@ class Components(_NavScreen):
             yield Static("", classes="spacer")
             with Horizontal(id="nav"):
                 yield Button("Back", variant="default", id="back")
+                yield Button("⚡ Express →", variant="success", id="express")
                 yield Button("Next →", variant="primary", id="next")
         yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "express":
+            # Two-click path: sensible defaults, straight to review.
+            cfg.ai = True
+            cfg.web = False
+            cfg.autostart = True
+            if _ollama_has_models():
+                cfg.pool = True
+            self.app.switch_screen("review")
+            return
         cfg.ai = self.query_one("#ai", Checkbox).value
         cfg.web = self.query_one("#web", Checkbox).value
         cfg.pool = self.query_one("#pool", Checkbox).value
@@ -265,7 +275,8 @@ class Components(_NavScreen):
         if event.button.id == "back":
             self.app.switch_screen("start")
         elif event.button.id == "next":
-            if not cfg.pool:
+            if not cfg.pool and not getattr(self.app, "_pool_asked", False):
+                self.app._pool_asked = True
                 self.app.push_screen(AskPool(), callback=self._after_pool_ask)
             else:
                 self.app.switch_screen("location")
@@ -405,6 +416,18 @@ class Location(_NavScreen):
             self.app.switch_screen("connections")
 
 
+def _ollama_has_models():
+    """True if a local Ollama already serves models (express path joins pool)."""
+    try:
+        import json as _json
+        import urllib.request as _urlreq
+        with _urlreq.urlopen("http://127.0.0.1:11434/api/tags", timeout=4) as resp:
+            data = _json.loads(resp.read().decode())
+        return bool(data.get("models"))
+    except Exception:
+        return False
+
+
 class Pool(_NavScreen):
     def compose(self) -> ComposeResult:
         tailnote = ""
@@ -420,7 +443,7 @@ class Pool(_NavScreen):
             yield Static(
                 "  You'll stay anonymous — the pool only ever sees a random node ID, and your\n"
                 "  endpoint + model are encrypted at rest. Nobody can piece together who you are.\n"
-                "  Contributors earn +25 AI quota, +2 memory and priority routing (your box serves you first)."
+                "  Contributors earn priority routing (your box serves you first) and 3x request limits — no quotas, ever."
                 + tailnote,
                 classes="sub")
             yield NavSelect([("10% — spare cycles only", 10), ("25%", 25), ("50% (default)", 50), ("75%", 75), ("100% — share it all", 100)],

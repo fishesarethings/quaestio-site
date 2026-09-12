@@ -599,7 +599,7 @@ def effective_ai_limits(guild_id, _pre=None):
     host_quota = _to_int(host_quota_raw)
     mem_raw = _g(guild_id, "ai_memory", "")
     quota_raw = _g(guild_id, "ai_quota", "")
-    memory = _to_int(mem_raw, host_mem or 4)
+    memory = _to_int(mem_raw, host_mem or 8)
     quota = _to_int(quota_raw, host_quota)
     if source == "self":
         endpoint = (_g(guild_id, "ai_endpoint", "") or "http://127.0.0.1:11434").strip()
@@ -610,16 +610,13 @@ def effective_ai_limits(guild_id, _pre=None):
                 memory = min(memory, host_mem)
             if host_quota:
                 quota = min(quota, host_quota)
-    # Contributor perks mirror the bot: lending compute earns above-cap bonus
-    # (+25 quota when capped, +2 memory) and priority routing of your own box.
+    # Contributor perks mirror the bot: priority routing of your own box plus
+    # higher request limits — no quotas, no caps.
     perks = False
     if (_g(guild_id, "ai_contribute", "0") or "0").strip().lower() not in ("", "0", "false", "none"):
         own_box = (_g(guild_id, "ai_endpoint", "") or "").strip()
         if own_box or source == "self":
             perks = True
-            if quota:
-                quota = quota + 25
-            memory = memory + 2
     return {"memory": memory, "quota": quota, "managed": managed, "window": window,
             "source": source, "endpoint": endpoint,
             "host_memory": host_mem, "host_quota": host_quota,
@@ -652,7 +649,7 @@ async def api_get_settings(request: Request, guild_id: int):
     settings["quota_effective"] = limits["quota"]
     settings["memory_effective"] = limits["memory"]
     settings["contributor_perks"] = limits.get("contributor_perks", False)
-    settings["contributor_bonus"] = {"quota": 25, "memory": 2}
+    settings["contributor_bonus"] = {"flood_mult": 3}
     settings["usage_now"] = usage_calls(guild_id, limits["window"])
     now = datetime.datetime.now(datetime.timezone.utc)
     w = limits["window"]
@@ -1463,7 +1460,7 @@ a{color:inherit}
   </div>
   <div class="card"><h3>① Install</h3><pre><code>curl -fsSL https://quaestio.online/bot/install.sh | bash</code></pre></div>
   <div class="card"><h3>② Serve</h3><pre><code>quaestio pool-serve</code></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
-  <div class="card"><h3>③ Perks</h3><ul><li>+25 AI quota above host caps</li><li>+2 conversation memory</li><li>Priority routing — your box serves you first</li><li>🌟 contributor badge in <code>/ai status</code></li></ul></div>
+  <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>3x request limits, no quotas ever</li><li>🌟 contributor badge in <code>/ai status</code></li></ul></div>
   <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
 </div>
 <script>

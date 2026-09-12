@@ -285,6 +285,10 @@ main { max-width: 1180px; margin: 0 auto; padding: 0 clamp(18px, 5vw, 48px); }
 }
 .cmd:hover { border-color: var(--indigo); color: #c7d2fe; transform: translateY(-2px); }
 .cmd.copied { border-color: var(--green); color: var(--green); }
+/* Visible copy affordance on the right of every command chip */
+.cmd::after { content: "\29C9"; margin-left: 8px; opacity: 0.45; font-size: 0.85em; }
+.cmd:hover::after { opacity: 1; }
+.cmd.copied::after { content: "\2713"; opacity: 1; }
 
 /* ============================= Install steps ============================= */
 .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 40px; }

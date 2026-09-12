@@ -210,8 +210,9 @@ def persona_prompt(key, custom):
         return (p or "").strip()
     return (PERSONALITIES.get(key) or CHARACTERS.get(key) or {}).get("prompt", "")
 
-# How much conversation to remember per channel by default (turns).
-MEMORY_DEFAULT = 4
+# How much conversation to remember per channel by default (turns). Long
+# enough to hold a real conversation; small models still stay coherent.
+MEMORY_DEFAULT = 8
 
 START_TIME = time.time()
 
@@ -529,14 +530,11 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
     raise last_err or ConnectionError("AI is offline — no model box replied.")
 
 
-# Pool contributor perks — the incentive for lending compute. Contributors
-# (guilds with ai_contribute=1 and their own box configured) earn:
-#   * priority routing (their own box first — lowest latency, works offline),
-#   * +CONTRIBUTOR_QUOTA_BONUS AI calls per window above host caps,
-#   * +CONTRIBUTOR_MEMORY_BONUS conversation turns,
-#   * visible "Pool contributor" credit in /ai status.
-CONTRIBUTOR_QUOTA_BONUS = 25
-CONTRIBUTOR_MEMORY_BONUS = 2
+# Pool contributor perks — the incentive for lending compute. No quotas, no
+# caps: contributors (guilds with ai_contribute=1 and their own box
+# configured) earn priority routing (own box first), 3x flood limits, and a
+# visible "Pool contributor" badge in /ai status.
+CONTRIBUTOR_FLOOD_MULT = 3
 
 
 def guild_ai_config(guild_id):
@@ -586,14 +584,7 @@ def guild_ai_config(guild_id):
         base["model"] = get_cfg(guild_id, "ai_model", OLLAMA_MODEL)
         base["memory"] = max(1, _safe_int(get_cfg(guild_id, "ai_memory", MEMORY_DEFAULT), MEMORY_DEFAULT))
         base["quota"] = max(0, _safe_int(get_cfg(guild_id, "ai_quota", "0"), 0))
-        if base["contribute"] and base["endpoint"]:
-            # Contributors earn above-cap perks even on their own box.
-            if base["quota"]:
-                base["quota"] = base["quota"] + CONTRIBUTOR_QUOTA_BONUS
-            base["memory"] = base["memory"] + CONTRIBUTOR_MEMORY_BONUS
-            base["contributor_perks"] = True
-        else:
-            base["contributor_perks"] = False
+        base["contributor_perks"] = bool(base["contribute"] and base["endpoint"])
         return base
 
     endpoint = host("ai_endpoint", OLLAMA_BASE_URL)
@@ -626,11 +617,6 @@ def guild_ai_config(guild_id):
         base["contributor_perks"] = False
     if own_ep and own_ep != endpoint and own_ep not in base["fallbacks"]:
         base["fallbacks"].append(own_ep)
-    if base["contributor_perks"]:
-        # Above-cap bonus: the tangible reward for lending compute.
-        if quota:
-            quota = quota + CONTRIBUTOR_QUOTA_BONUS
-        memory = memory + CONTRIBUTOR_MEMORY_BONUS
     base["memory"] = memory
     base["quota"] = quota
     return base
@@ -1468,11 +1454,13 @@ FLOOD_GUILD_PER_MIN = 20
 _flood_hits = {}
 
 
-def flood_ok(guild_id, user_id) -> bool:
-    """True if this user/guild may queue another AI call right now."""
+def flood_ok(guild_id, user_id, bonus=False) -> bool:
+    """True if this user/guild may queue another AI call right now.
+    Contributors (bonus=True) get 3x headroom instead of any quota."""
+    mult = CONTRIBUTOR_FLOOD_MULT if bonus else 1
     now = time.time()
-    for key, limit in ((f"u:{guild_id}:{user_id}", FLOOD_USER_PER_MIN),
-                       (f"g:{guild_id}", FLOOD_GUILD_PER_MIN)):
+    for key, limit in ((f"u:{guild_id}:{user_id}", FLOOD_USER_PER_MIN * mult),
+                       (f"g:{guild_id}", FLOOD_GUILD_PER_MIN * mult)):
         hits = [t for t in _flood_hits.get(key, []) if now - t < 60]
         if len(hits) >= limit:
             _flood_hits[key] = hits
@@ -1501,7 +1489,7 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
     if not quota_ok(guild_id, cfg["quota"], cfg["window"]):
         await _quota_notice(message)
         return False
-    if not flood_ok(guild_id, message.author.id):
+    if not flood_ok(guild_id, message.author.id, bonus=cfg.get("contribute", False)):
         await _ai_error_notice(message.channel, guild_id,
                                "⏳ Slow down — too many AI requests at once. Try again in a minute.")
         return False
@@ -2543,8 +2531,8 @@ async def ai_status(interaction: discord.Interaction):
     endpoint_line = f"Endpoint: `{cfg['endpoint']}`\n" if admin else ""
     perk_note = ""
     if cfg.get("contributor_perks"):
-        perk_note = (f"\n🌟 Pool contributor ✓ (+{CONTRIBUTOR_QUOTA_BONUS} quota, "
-                     f"+{CONTRIBUTOR_MEMORY_BONUS} memory, priority routing)")
+        perk_note = ("\n🌟 Pool contributor ✓ (priority routing, "
+                     f"{CONTRIBUTOR_FLOOD_MULT}x request limits)")
     await interaction.response.send_message(
         f"**AI settings**\n"
         f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
@@ -2584,12 +2572,12 @@ async def pool_info(interaction: discord.Interaction):
         try:
             cfg = guild_ai_config(interaction.guild.id)
             if cfg.get("contributor_perks"):
-                lines.append(f"🌟 This server contributes ✓ (+{CONTRIBUTOR_QUOTA_BONUS} quota, "
-                             f"+{CONTRIBUTOR_MEMORY_BONUS} memory, priority routing)")
+                lines.append(f"🌟 This server contributes ✓ (priority routing, "
+                             f"{CONTRIBUTOR_FLOOD_MULT}x request limits)")
             else:
-                lines.append(f"Lend your box (`quaestio contribute`) and earn "
-                             f"+{CONTRIBUTOR_QUOTA_BONUS} quota, +{CONTRIBUTOR_MEMORY_BONUS} memory "
-                             f"+ priority routing. Anonymous — random node ID only.")
+                lines.append(f"Lend your box (`quaestio pool-serve`) and earn "
+                             f"priority routing, {CONTRIBUTOR_FLOOD_MULT}x request limits "
+                             f"and a contributor badge. Anonymous — random node ID only.")
         except Exception:
             pass
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
@@ -2632,7 +2620,7 @@ async def ask(interaction: discord.Interaction, prompt: str):
             ephemeral=True,
         )
         return
-    if not flood_ok(interaction.guild.id, interaction.user.id):
+    if not flood_ok(interaction.guild.id, interaction.user.id, bonus=cfg.get("contribute", False)):
         await interaction.response.send_message(
             "⏳ Slow down — too many AI requests at once. Try again in a minute.",
             ephemeral=True,
@@ -2724,7 +2712,7 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
             ephemeral=True,
         )
         return
-    if not flood_ok(interaction.guild.id, interaction.user.id):
+    if not flood_ok(interaction.guild.id, interaction.user.id, bonus=cfg.get("contribute", False)):
         await interaction.response.send_message(
             "⏳ Slow down — too many AI requests at once. Try again in a minute.",
             ephemeral=True,
