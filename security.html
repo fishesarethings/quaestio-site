@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quaestio — Security &amp; Architecture</title>
+<meta name="description" content="How Quaestio handles your data: hosting modes, what pool nodes can see, encryption, installer behavior, and contact.">
+<link rel="canonical" href="https://quaestio.online/security.html">
+<link rel="icon" href="assets/logo-512.png">
+<link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+<main style="max-width:680px;margin:48px auto;padding:0 20px">
+<p><a href="/">← Quaestio</a></p>
+<h1>Security &amp; Architecture</h1>
+<p>Plain-language description of how Quaestio works, what each part can see, and how to check our claims. Source: <a href="https://github.com/fishesarethings/quaestio-site">GitHub</a>. Contact: <a href="mailto:info@quaestio.online">info@quaestio.online</a>.</p>
+
+<h2>Hosting modes</h2>
+<ul>
+<li><strong>Shared host (default).</strong> You invite Quaestio's bot to Discord. No Discord bot token, no setup. AI runs on community hardware via the pool.</li>
+<li><strong>Your own box.</strong> Point your server at your Ollama in the admin panel. Same bot, your compute.</li>
+<li><strong>Community pool.</strong> Anyone lends spare AI compute with <code>quaestio pool-serve</code> or the browser host. No Discord token involved anywhere.</li>
+</ul>
+
+<h2>What data moves where</h2>
+<ul>
+<li><strong>Discord → bot:</strong> message text the bot is asked about, plus display names. The bot never asks for passwords.</li>
+<li><strong>Bot → model host:</strong> the prompt (conversation + question), sampling settings, and a stop list. Display names travel as <code>Name[1234]</code> speaker tags.</li>
+<li><strong>What a pool node sees:</strong> the prompt text it is asked to complete. Assume a node operator <em>can</em> technically read prompts routed to them — that is why routing is random, nodes are anonymous, and failures park bad nodes automatically.</li>
+<li><strong>What the router stores:</strong> anonymous node IDs, encrypted endpoints/models, served counts, health timestamps. No chat content is stored by the pool; job rows are deleted after delivery (stale claims requeue after 120s, rows older than an hour are reaped).</li>
+<li><strong>What Discord admins see:</strong> their own servers' settings, memory, and leaderboards via Discord OAuth. Never anyone else's data.</li>
+</ul>
+
+<h2>Encryption, precisely</h2>
+<ul>
+<li><strong>In transit:</strong> TLS (HTTPS/WSS) for site, panel, broker, and Discord. Tailnet traffic is WireGuard-encrypted.</li>
+<li><strong>At rest:</strong> secrets, endpoints, and models in the database are Fernet-encrypted (AES-CBC + HMAC); the key file is 0600.</li>
+<li><strong>Not claimed:</strong> true end-to-end encryption of prompts. A model host must decrypt a prompt to run it. We do not use the term “end-to-end encrypted”.</li>
+</ul>
+
+<h2>Pool: not mining, no money</h2>
+<p>Lending compute earns priority routing, higher request limits, and a contributor badge. There is no cryptocurrency, no cash payout, no resale, and no financial return. Only approved model families run; substituted models are refused. Stop anytime: <code>quaestio</code> → leave the pool, uninstall, or just close the tab.</p>
+
+<h2>Installer behavior</h2>
+<p>Review source first: <a href="https://github.com/fishesarethings/quaestio-site/blob/main/bot/install.sh">install.sh</a> · <a href="https://github.com/fishesarethings/quaestio-site/blob/main/bot/install.ps1">install.ps1</a>. It creates <code>~/quaestio</code> (venv, bot code, <code>.env</code> 0600, keyfile), installs Python deps + Ollama + one model, and optionally registers a pool node. It never asks for a Discord bot token. Contacts: raw.githubusercontent.com, ollama.com, quaestio.online, and the pool broker. Uninstall: <code>quaestio uninstall</code> (or delete <code>~/quaestio</code>).</p>
+
+<h2>Versions &amp; contact</h2>
+<p>Changelog: <a href="https://github.com/fishesarethings/quaestio-site/blob/main/CHANGELOG.md">CHANGELOG.md</a>. Issues: GitHub tracker. Security reports: <a href="mailto:info@quaestio.online">info@quaestio.online</a>.</p>
+</main>
+</body>
+</html>

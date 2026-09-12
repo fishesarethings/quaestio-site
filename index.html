@@ -69,7 +69,7 @@
         <a class="btn btn-ghost btn-lg" href="https://admin.quaestio.online">Open admin panel</a>
       </div>
       <ul class="hero-check">
-        <li><span class="ok">✓</span> Private by design — AI runs on community hardware, encrypted end-to-end</li>
+        <li><span class="ok">✓</span> Private by design — AI runs on community hardware, TLS-encrypted in transit</li>
         <li><span class="ok">✓</span> Keep chatting after the first @; it leaves after idle or &ldquo;go away&rdquo;</li>
         <li><span class="ok">✓</span> Personalities, birthdays, leaderboard &amp; a real memory</li>
       </ul>
@@ -92,10 +92,10 @@
   </div>
 
   <section class="stats reveal">
-    <div class="stat"><span class="stat-num" data-count="41">0</span><span class="stat-label">Commands</span></div>
-    <div class="stat"><span class="stat-num" data-count="1">0</span><span class="stat-label">AI brain</span></div>
-    <div class="stat"><span class="stat-num" data-count="0" data-suffix="$">0</span><span class="stat-label">Paywalls</span></div>
-    <div class="stat"><span class="stat-num" data-count="100" data-suffix="%">0</span><span class="stat-label">Private</span></div>
+    <div class="stat"><span class="stat-num" data-count="41">41</span><span class="stat-label">Commands</span></div>
+    <div class="stat"><span class="stat-num" data-count="1">1</span><span class="stat-label">AI brain</span></div>
+    <div class="stat"><span class="stat-num" data-count="0" data-suffix="$">0$</span><span class="stat-label">Paywalls</span></div>
+    <div class="stat"><span class="stat-num" data-count="100" data-suffix="%">100%</span><span class="stat-label">Private</span></div>
   </section>
 
   <section class="section" id="features">
@@ -107,7 +107,7 @@
       <div class="card reveal">
         <div class="card-icon" style="--c:#a78bfa">💬</div>
         <h3>Real AI, yours</h3>
-        <p>A small local model runs on the host&rsquo;s own hardware. No cloud, no API keys, no per-message fees. Replies are typed out — one conversation at a time, like a person.</p>
+        <p>A small local model runs on real hardware — no commercial AI API, no API keys, no per-message fees. Depending on your setup, inference runs on the shared Quaestio host, your own machine, or a participating community host. Replies are typed out — one conversation at a time, like a person.</p>
       </div>
       <div class="card reveal">
         <div class="card-icon" style="--c:#38bdf8">🗣️</div>
@@ -152,7 +152,7 @@
       <div class="card reveal">
         <div class="card-icon" style="--c:#818cf8">🔒</div>
         <h3>Private by design</h3>
-        <p>Everything lives in a local SQLite database on the host. No trackers, no cookies, no selling, no cloud. Your community&rsquo;s words stay yours.</p>
+        <p>Everything lives in a local SQLite database on the host. No trackers, no cookies, no selling, no third-party AI provider. Your community&rsquo;s words stay yours.</p>
       </div>
     </div>
   </section>
@@ -266,7 +266,7 @@
     <div class="selfhost reveal">
       <div class="selfhost-copy">
         <h3>Optional: lend your box to the community pool</h3>
-        <p>Quaestio runs on shared infrastructure by default, so you never have to touch a command line. Prefer to contribute compute? With <strong>one command</strong> you can join the <strong>community hosting pool</strong> — your machine handles a share of the AI requests, routed randomly and encrypted end-to-end between participant devices. No Discord token needed.</p>
+        <p>Quaestio runs on shared infrastructure by default, so you never have to touch a command line. Prefer to contribute compute? With <strong>one command</strong> you can join the <strong>community hosting pool</strong> — your machine handles a share of the AI requests, routed randomly over TLS-encrypted connections. No Discord token needed.</p>
         <ul class="hero-check">
           <li><span class="ok">✓</span> No token — you use Quaestio's shared bot, not your own</li>
           <li><span class="ok">✓</span> Requests fan out randomly across healthy community hosts</li>
@@ -282,7 +282,7 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
 ▸  no Discord bot token asked — ever
 ▸  registers your node in the pool (anonymous)
 ▸  puts `quaestio` on your PATH — a full-screen interactive TUI</span></code></pre>
-        <div class="code-bar"><span class="ok">●</span> community hosting active</div>
+        <div class="code-bar"><span class="ok">●</span> community hosting active · <a href="https://github.com/fishesarethings/quaestio-site/blob/main/bot/install.sh">review source</a> · <a href="https://github.com/fishesarethings/quaestio-site/blob/main/CHANGELOG.md">changelog</a> · <a href="https://quaestio.online/security.html">security</a></div>
       </div>
     </div>
   </section>
@@ -361,6 +361,17 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
       <a href="#features">Features</a>
       <a href="#commands">Commands</a>
       <a href="#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <h5>Project</h5>
+      <a href="https://github.com/fishesarethings/quaestio-site">GitHub</a>
+      <a href="https://github.com/fishesarethings/quaestio-site/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="security.html">Security</a>
+    </div>
+    <div class="footer-col">
+      <h5>Pool</h5>
+      <a href="https://pool.quaestio.online">Contribute</a>
+      <a href="https://admin.quaestio.online">Admin panel</a>
     </div>
     <div class="footer-col">
       <h5>Legal</h5>
