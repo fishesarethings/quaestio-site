@@ -33,6 +33,7 @@
       const lines = termBody.querySelectorAll(".t-line");
       for (let k = 0; k + MAX_LINES < lines.length; k++) lines[k].remove();
     };
+    const pinCursor = () => { termBody.appendChild(cursor); };
     const line = (p, cmd, out) => {
       const div = document.createElement("div");
       div.className = "t-line";
@@ -43,6 +44,7 @@
       }
       termBody.appendChild(div);
       trim();
+      pinCursor();
     };
 
     const cursor = document.createElement("span");
@@ -70,6 +72,7 @@
         typing.innerHTML = `<span class="t-prompt">${p}</span><span class="t-cmd">${cmd}</span>`;
         termBody.insertBefore(typing, cursor);
         trim();
+        pinCursor();
         setTimeout(() => { typing.remove(); line(p, cmd, out); }, 900);
       }
       i++;
@@ -144,6 +147,19 @@
       return `🎱 live answer: ${answers[Math.floor(Math.random() * answers.length)]}`;
     },
     "/coin": () => `🪙 live flip: ${Math.random() < 0.5 ? "heads" : "tails"}`,
+    "/rps": () => {
+      const throws = ["rock", "paper", "scissors"];
+      const you = throws[Math.floor(Math.random() * 3)], bot = throws[Math.floor(Math.random() * 3)];
+      const win = you === bot ? "tie!" : ((you === "rock" && bot === "scissors") || (you === "paper" && bot === "rock") || (you === "scissors" && bot === "paper")) ? "you win!" : "bot wins!";
+      return `✊ live rps: you ${you} vs ${bot} — ${win}`;
+    },
+    "/slot": () => {
+      const sym = ["🍒", "🍋", "🔔", "⭐", "💎"];
+      const roll = [0, 1, 2].map(() => sym[Math.floor(Math.random() * sym.length)]);
+      const win = roll[0] === roll[1] || roll[1] === roll[2];
+      return `🎰 live slots: ${roll.join(" ")} — ${win ? "win!" : "try again"}`;
+    },
+    "/trivia": () => "❓ live trivia: Red planet? It's Mars. Try /answer in Discord!",
   };
   document.querySelectorAll(".cmd").forEach((btn) => {
     btn.addEventListener("contextmenu", (e) => {

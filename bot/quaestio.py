@@ -445,7 +445,7 @@ def pool_status():
     if d["status"] == "active":
         say("  Status:    active — requests route to your box", GREEN)
     else:
-        say("  Status:    pending host approval (see the panel Host → Community pool)", YELLOW)
+        say(f"  Status:    {d['status']} (re-run `quaestio contribute` to refresh)", YELLOW)
     say(f"  Share:     {d['share']}% of your box")
     say(f"  Model:     {d.get('model') or '?'}")
     say(f"  Requests served:  {d['served']}", GREEN)
@@ -458,6 +458,18 @@ def pool_status():
 
 
 pool = pool_status
+
+
+def rename():
+    """Privacy rename: fresh random node ID (keeps served count). Allowed
+    once every 7 days so reputation stays meaningful."""
+    node_secret = read_env("POOL_NODE_SECRET") or ""
+    if not node_secret:
+        boom("This box isn't in the pool yet. Join with:  quaestio contribute")
+    r = _pool_json(_broker_url().rstrip("/") + "/api/pool/rename", {"node_secret": node_secret})
+    if "error" in r:
+        boom(f"Couldn't rename ({r['error']}).")
+    say(f"You're now {r['name']} — served count carried over. Next change in {r.get('next_change_days', 7)} days.", GREEN)
 
 
 def _ollama_generate(job):
@@ -662,12 +674,8 @@ def contribute():
                       **({"node_secret": node_secret} if node_secret else {})})
     if "error" not in reg and reg.get("name"):
         _write_pool_creds(reg)
-        if reg.get("status") == "pending":
-            say(f"Connected to the community pool as {reg['name']} ({share}%) — "
-                "pending host approval.", GREEN)
-        else:
-            say(f"Connected to the community pool as {reg['name']} ({share}%) — "
-                "requests now route to you.", GREEN)
+        say(f"Connected to the community pool as {reg['name']} ({share}%) — "
+            "requests now route to you.", GREEN)
         say("See your contributions anytime:  quaestio pool", GREEN)
         return
     # Broker unreachable → fall back to the local pool so a self-hosted bot works.
@@ -1141,6 +1149,8 @@ folder — nothing is cloud-hosted unless you choose to share.
     quaestio settings               change any setting
     quaestio contribute             join the community pool
     quaestio pool                   see your contributions
+    quaestio pool-serve             serve jobs until Ctrl-C
+    quaestio rename                 fresh random node ID (weekly)
     quaestio update                 pull the latest bot
     quaestio uninstall              remove everything
 
@@ -1164,6 +1174,7 @@ def help_text():
     print("    quaestio settings")
     print("    quaestio contribute")
     print("    quaestio pool-serve   (serve jobs: register + work forever)")
+    print("    quaestio rename       (fresh node ID, weekly)")
     print("    quaestio pool")
     print("    quaestio update")
     print("    quaestio uninstall")
@@ -1197,6 +1208,7 @@ def _menu_actions():
         ("Settings", settings, "change tokens, model, timeout…"),
         ("Contribute to the pool", contribute, "join / update / leave the community pool"),
         ("Pool status", pool_status, "your contributions: requests served, share, health"),
+        ("Rename node", rename, "fresh random node ID (weekly privacy)"),
         ("Local web panel", localweb, "turn the localhost settings page on/off"),
         ("Update", update, "pull the latest bot code"),
         ("Uninstall", uninstall, "remove everything, nothing left behind"),
@@ -1319,6 +1331,7 @@ def menu_plain():
         ("4", "Settings", settings, "change tokens, model, timeout…"),
         ("5", "Contribute to the pool", contribute, "join / update / leave the community pool"),
         ("6", "Pool status", pool_status, "your contributions: requests served, share, health"),
+        ("11", "Rename node", rename, "fresh random node ID (weekly privacy)"),
         ("7", "Local web panel", localweb, "turn the localhost settings page on/off"),
         ("8", "Update", update, "pull the latest bot code"),
         ("9", "Uninstall", uninstall, "remove everything, nothing left behind"),
@@ -1355,7 +1368,7 @@ def main():
                                      add_help=False)
     parser.add_argument("action", nargs="?", default=None,
                         help="status | start | stop | restart | update | uninstall | "
-                             "contribute | pool-serve | pool | settings | localweb | help | about")
+                             "contribute | pool-serve | pool | rename | settings | localweb | help | about")
     parser.add_argument("--yes", action="store_true",
                         help="non-interactive: accept auto-detected values")
     parser.add_argument("-h", "--help", action="store_true")

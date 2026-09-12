@@ -327,6 +327,8 @@ def _migrate_pool_health(conn):
         conn.execute("ALTER TABLE hosters ADD COLUMN pull INTEGER DEFAULT 0")
     if "last_seen" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN last_seen TEXT DEFAULT ''")
+    if "renamed_at" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN renamed_at TEXT DEFAULT ''")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS pool_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

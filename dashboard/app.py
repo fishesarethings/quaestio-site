@@ -174,6 +174,9 @@ def _migrate_pool_broker(conn):
         conn.execute("ALTER TABLE hosters ADD COLUMN pull INTEGER DEFAULT 0")
     if "last_seen" not in cols:
         conn.execute("ALTER TABLE hosters ADD COLUMN last_seen TEXT DEFAULT ''")
+    if "renamed_at" not in cols:
+        # Privacy renames (rate-limited, see /api/pool/rename).
+        conn.execute("ALTER TABLE hosters ADD COLUMN renamed_at TEXT DEFAULT ''")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS pool_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -952,6 +955,51 @@ async def api_pool_unregister(request: Request):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+RENAME_COOLDOWN_DAYS = 7
+
+
+@app.post("/api/pool/rename")
+async def api_pool_rename(request: Request):
+    """Privacy rename: swap your random node ID for a fresh one. Rate-limited
+    (once per 7 days) so reputation and leaderboard history stay meaningful.
+    Served counts carry over — only the name changes."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    conn = db()
+    row = conn.execute("SELECT id, name, renamed_at FROM hosters WHERE node_secret_hash=?",
+                       (_node_secret_hash(secret),)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Unknown node")
+    if row["renamed_at"]:
+        try:
+            last = datetime.datetime.fromisoformat(row["renamed_at"])
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=datetime.timezone.utc)
+            wait = last + datetime.timedelta(days=RENAME_COOLDOWN_DAYS) - datetime.datetime.now(datetime.timezone.utc)
+            if wait.total_seconds() > 0:
+                days = max(1, round(wait.total_seconds() / 86400))
+                conn.close()
+                raise HTTPException(429, f"Name changes every {RENAME_COOLDOWN_DAYS} days — try again in ~{days}d.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    new_name = "node-" + secrets.token_hex(4)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute("UPDATE hosters SET name=?, renamed_at=? WHERE id=?", (new_name, now, row["id"]))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "name": new_name, "next_change_days": RENAME_COOLDOWN_DAYS}
 
 
 @app.get("/api/pool/nodes")
