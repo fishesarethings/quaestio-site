@@ -21,13 +21,18 @@
       { p: "Kai 💬", cmd: " /8ball will we win tonight?", out: null },
       { p: "Quaestio 🤖", cmd: "", out: "▸ 🎱 Signs point to yes." },
       { p: "Nova 💬", cmd: " /trivia", out: null },
-      { p: "Quaestio 🤖", cmd: "", out: "▸ ❓ What planet is known as the Red Planet? <code>/answer mars</code>" },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ ❓ Red planet? Reply <code>/answer mars</code>" },
       { p: "Kai 💬", cmd: " /answer mars", out: null },
       { p: "Quaestio 🤖", cmd: "", out: '▸ ✅ Correct, Kai! <b>+1</b> trivia point.' },
       { p: "$", cmd: " /warn @spammer breaking rule 3", out: null },
       { p: "Quaestio 🤖", cmd: "", out: '<span class="t-ok">✓</span> <b>@spammer</b> warned · 2/3 warns (auto-kick at 3)' },
     ];
 
+    const MAX_LINES = 9;
+    const trim = () => {
+      const lines = termBody.querySelectorAll(".t-line");
+      for (let k = 0; k + MAX_LINES < lines.length; k++) lines[k].remove();
+    };
     const line = (p, cmd, out) => {
       const div = document.createElement("div");
       div.className = "t-line";
@@ -37,6 +42,7 @@
         div.innerHTML = `<span class="t-out">${out}</span>`;
       }
       termBody.appendChild(div);
+      trim();
     };
 
     const cursor = document.createElement("span");
@@ -63,6 +69,7 @@
         typing.className = "t-line";
         typing.innerHTML = `<span class="t-prompt">${p}</span><span class="t-cmd">${cmd}</span>`;
         termBody.insertBefore(typing, cursor);
+        trim();
         setTimeout(() => { typing.remove(); line(p, cmd, out); }, 900);
       }
       i++;
@@ -126,7 +133,27 @@
     toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
   };
 
+  const hint = document.getElementById("cmd-hint");
+  const live = {
+    "/dice": () => {
+      const a = 1 + Math.floor(Math.random() * 6), b = 1 + Math.floor(Math.random() * 6);
+      return `🎲 live roll: ${a} + ${b} = ${a + b}`;
+    },
+    "/8ball": () => {
+      const answers = ["Signs point to yes.", "Ask again later.", "Without a doubt.", "Don't count on it.", "Most likely."];
+      return `🎱 live answer: ${answers[Math.floor(Math.random() * answers.length)]}`;
+    },
+    "/coin": () => `🪙 live flip: ${Math.random() < 0.5 ? "heads" : "tails"}`,
+  };
   document.querySelectorAll(".cmd").forEach((btn) => {
+    btn.addEventListener("contextmenu", (e) => {
+      const fn = live[btn.dataset.cmd];
+      if (!fn) return; // only demo chips handle right-click
+      e.preventDefault();
+      showToast(fn());
+      btn.classList.add("copied");
+      setTimeout(() => btn.classList.remove("copied"), 1200);
+    });
     btn.addEventListener("click", async () => {
       const cmd = btn.dataset.cmd;
       try {
