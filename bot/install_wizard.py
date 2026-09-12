@@ -822,7 +822,7 @@ exec "{PY}" "{os.path.join(cfg.bot_dir, 'quaestio.py')}" "$@"
     return f"`quaestio` command ready ({link})"
 
 
-def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, share: int) -> str:
+def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, share: int, node_secret: str = "") -> str:
     """Register this box with the central community-pool broker so the shared
     bot can route requests to it. The returned node secret is stored in the
     node's own .env so it can update or leave later."""
@@ -830,7 +830,10 @@ def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, sha
     import urllib.error as _urlerr
     import urllib.request as _urlreq
     url = broker.rstrip("/") + "/api/pool/register"
-    body = _json.dumps({"endpoint": endpoint, "model": model, "share": int(share)}).encode()
+    payload = {"endpoint": endpoint, "model": model, "share": int(share)}
+    if node_secret:
+        payload["node_secret"] = node_secret
+    body = _json.dumps(payload).encode()
     try:
         import certifi as _certifi
         import ssl as _ssl
@@ -866,9 +869,6 @@ def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, sha
     with open(env_path, "w") as f:
         f.writelines(kept)
     verb = "updated" if data.get("new") is False else "joined"
-    if data.get("status") == "pending":
-        return (f"{verb} the community pool as {data.get('name', 'node-????')} ({share}%) — "
-                "pending host approval. See the panel Host → Community pool.")
     return f"{verb} the community pool as {data.get('name', 'node-????')} ({share}%) — requests now route to you"
 
 POOL_BROKER = os.environ.get("POOL_BROKER_URL") or "https://admin.quaestio.online"
@@ -886,7 +886,19 @@ def _step_pool():
     else:
         endpoint = "http://127.0.0.1:11434"
     join_key = os.environ.get("POOL_JOIN_KEY") or ""
-    return _pool_join_remote(POOL_BROKER, join_key, endpoint, cfg.model, cfg.pool_share)
+    # Re-installs reuse the existing node (same secret → update path), so
+    # running the installer again updates config instead of minting dupes.
+    node_secret = ""
+    try:
+        with open(os.path.join(cfg.bot_dir, ".env")) as f:
+            for ln in f:
+                if ln.strip().startswith("POOL_NODE_SECRET="):
+                    node_secret = ln.strip().split("=", 1)[1].strip()
+                    break
+    except OSError:
+        pass
+    return _pool_join_remote(POOL_BROKER, join_key, endpoint, cfg.model, cfg.pool_share,
+                             node_secret=node_secret or None)
 
 
 def _step_web():
