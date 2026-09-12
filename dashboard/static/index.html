@@ -82,7 +82,7 @@
       </div>
       <div class="code-block" id="os-cmd">
         <pre><code>curl -fsSL https://quaestio.online/bot/install.sh | bash</code></pre>
-        <div class="code-bar" id="os-cmd-note">Requires Python 3.10+ · creates ~/quaestio · asks for your bot token once.</div>
+        <div class="code-bar" id="os-cmd-note">Requires Python 3.10+ · creates ~/quaestio · no Discord bot token — you use the shared bot.</div>
       </div>
 
       <div class="selfhost-grid">
@@ -625,7 +625,7 @@
           </span>
           <div>
             <h3>Warning system</h3>
-            <p>Auto-moderate repeat offenders. Admins warn with <code>/warn</code>; everything else just happens.</p>
+            <p>Auto-moderate repeat offenders. Admins warn with <code>/warn</code>; automatic action occurs after the configured warning threshold.</p>
           </div>
         </div>
 
@@ -673,7 +673,7 @@
               <input type="number" id="xp_min_words" min="1" max="20" placeholder="3">
               <span class="unit">words</span>
             </div>
-            <p class="hint">Shorter messages don't count. Kills one-word spam.</p>
+            <p class="hint">Shorter messages don't count. Messages below the minimum word count do not grant XP.</p>
           </div>
           <div class="field-group">
             <label for="xp_max_words">Max words</label>
@@ -681,7 +681,7 @@
               <input type="number" id="xp_max_words" min="10" max="500" placeholder="100">
               <span class="unit">words</span>
             </div>
-            <p class="hint">Longer messages don't count. Kills pasted articles.</p>
+            <p class="hint">Longer messages don't count. Messages above the maximum word count do not grant XP.</p>
           </div>
           <div class="field-group">
             <label for="xp_cooldown">Pace</label>

@@ -1540,6 +1540,7 @@ a{color:inherit}
     <div class="stat"><div class="num" id="st-served">…</div><div class="lbl">requests served</div></div>
   </div>
   <div class="card"><h3>① Install</h3><pre><code id="cmd-install">curl -fsSL https://quaestio.online/bot/install.sh | bash</code><button class="copybtn" data-copy="cmd-install">⧉ Copy</button></pre></div>
+  <p style="color:var(--muted);font-size:.82rem">Review source first: <a href="https://github.com/fishesarethings/quaestio-site/blob/main/bot/install.sh">install.sh</a> · uninstall anytime with <code>quaestio uninstall</code>.</p>
   <div class="card"><h3>② Serve</h3><pre><code id="cmd-serve">quaestio pool-serve</code><button class="copybtn" data-copy="cmd-serve">⧉ Copy</button></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
   <div class="card"><h3>🌐 Or host right in this browser</h3>
     <p style="color:var(--muted)">No install at all — the AI model runs on this page with WebGPU. Keep the tab open and it serves pool jobs like any other node.</p>
@@ -1564,7 +1565,7 @@ a{color:inherit}
     <div id="web-prog" style="color:var(--muted);font-size:.85rem;margin-top:8px"></div>
     <p style="color:var(--muted);font-size:.82rem;margin-top:10px">⚠️ Warnings: uses your GPU/CPU while serving (fan + battery); keep this tab open and your machine awake — closing it just idles you, nothing breaks; first start downloads the model once (~1 GB, cached after); needs a WebGPU browser (Chrome/Edge 113+, Safari 26+).</p>
   </div>
-  <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>2–4x request limits by share (more compute = more headroom)</li><li>🌟 contributor badge in <code>/ai status</code> + leaderboard glory below</li></ul></div>
+  <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>2–4x request limits by share (more compute = more headroom)</li><li>🌟 contributor badge in <code>/ai status</code> + leaderboard glory below</li><li>Not mining: no crypto, no cash, no payouts — just a faster bot for everyone</li></ul></div>
   <div class="card"><h3>🏆 Top contributors</h3><p style="color:var(--muted)">Anonymous node IDs only — ranked by requests served.</p><div id="leaders"><p style="color:var(--muted)">Loading…</p></div></div>
   <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
 </div>
