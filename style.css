@@ -202,6 +202,8 @@ main { max-width: 1180px; margin: 0 auto; padding: 0 clamp(18px, 5vw, 48px); }
 .t-line { white-space: pre-wrap; word-break: break-word; animation: line-in 0.3s ease both; }
 @keyframes line-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .t-prompt { color: var(--cyan); }
+.terminal-caption { padding: 10px 20px 14px; color: var(--muted-2); font-size: 12.5px; border-top: 1px solid var(--border); }
+.terminal-caption b { color: var(--muted); font-weight: 600; }
 .t-cmd { color: var(--text); }
 .t-out { color: var(--muted); }
 .t-out b { color: var(--text); font-weight: 600; }

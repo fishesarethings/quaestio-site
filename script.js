@@ -6,17 +6,26 @@
   /* ---------------- Terminal typing animation ---------------- */
   const termBody = document.getElementById("terminalBody");
   if (termBody) {
+    // Demo cast: Nova + Kai are server members, Quaestio is the bot.
     const script = [
-      { p: "Nova", cmd: " @Quaestio how does XP work?", out: null },
-      { p: "Q", cmd: "", out: '▸ "Chat and you earn XP — past messages count, and reward roles unlock as you level. Want the top chatters?"' },
-      { p: "Nova", cmd: " sure, who's winning?", out: null },
-      { p: "Q", cmd: "", out: "▸ Ranking now: <b>1.</b> Nova · <b>2.</b> Kai · <b>3.</b> Mara — <code>/leaderboard</code> shows it live." },
+      { p: "Nova 💬", cmd: " @Quaestio how does XP work?", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: '▸ "Chat and you earn XP — past messages count, and reward roles unlock as you level. Want the top chatters?"' },
+      { p: "Nova 💬", cmd: " sure, who's winning?", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ Ranking now: <b>1.</b> Nova · <b>2.</b> Kai · <b>3.</b> Mara — <code>/leaderboard</code> shows it live." },
       { p: "$", cmd: " /ask \"who are you?\"", out: null },
-      { p: "Q", cmd: "", out: '▸ "I\'m <b>Quaestio</b> — your server\'s own local AI. No cloud, no paywall. Ask me anything."' },
+      { p: "Quaestio 🤖", cmd: "", out: '▸ "I\'m <b>Quaestio</b> — your server\'s own local AI. No cloud, no paywall. Ask me anything."' },
       { p: "$", cmd: " /rank @nova", out: null },
-      { p: "Q", cmd: "", out: "▸ <b>Nova</b> is level <b>12</b> · 2,340 XP · next level in 160 XP" },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ <b>Nova</b> is level <b>12</b> · 2,340 XP · next level in 160 XP" },
+      { p: "Kai 💬", cmd: " anyone up for dice? /dice 2d6", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ 🎲 <b>9</b> (5 + 4) — Kai wins the roll!" },
+      { p: "Kai 💬", cmd: " /8ball will we win tonight?", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ 🎱 Signs point to yes." },
+      { p: "Nova 💬", cmd: " /trivia", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ ❓ What planet is known as the Red Planet? <code>/answer mars</code>" },
+      { p: "Kai 💬", cmd: " /answer mars", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: '▸ ✅ Correct, Kai! <b>+1</b> trivia point.' },
       { p: "$", cmd: " /warn @spammer breaking rule 3", out: null },
-      { p: "Q", cmd: "", out: '<span class="t-ok">✓</span> <b>@spammer</b> warned · 2/3 warns (auto-kick at 3)' },
+      { p: "Quaestio 🤖", cmd: "", out: '<span class="t-ok">✓</span> <b>@spammer</b> warned · 2/3 warns (auto-kick at 3)' },
     ];
 
     const line = (p, cmd, out) => {
@@ -37,7 +46,13 @@
     let i = 0;
     const tick = () => {
       if (i >= script.length) {
-        cursor.remove();
+        // Loop the demo so the panel always feels alive.
+        setTimeout(() => {
+          termBody.querySelectorAll(".t-line").forEach((el) => el.remove());
+          termBody.appendChild(cursor);
+          i = 0;
+          setTimeout(tick, 600);
+        }, 7000);
         return;
       }
       const { p, cmd, out } = script[i];

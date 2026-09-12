@@ -1,0 +1,14 @@
+# Quaestio
+
+> Free, self-hosted Discord AI companion. 41 commands, no paywall, no subscriptions.
+
+Quaestio is a self-hosted Discord bot with a local AI brain (Ollama): keep-chatting AI without @-ing every time, 6 personalities (friendly, sage, sarcastic, pirate, professional, feral gremlin) plus characters, conversation memory, XP levels with reward roles, birthdays, moderation (warn/kick/ban/mute/purge), tags, welcomes, and games (8ball, dice, coin, rps, trivia, slots, tic-tac-toe).
+
+- Add the shared bot in one click; configure in the web panel (`/panel` or https://admin.quaestio.online) by signing in with Discord as a server admin.
+- Lend compute to the community pool: `curl -fsSL https://quaestio.online/bot/install.sh | bash`, then `quaestio pool-serve`. Anonymous node IDs, encrypted endpoints, offline-friendly.
+- Pool status and join: https://pool.quaestio.online
+- Docs: https://quaestio.online/ — Features, Commands, Install, FAQ, Privacy, Terms.
+
+## Commands (Discord slash)
+
+/ask /summarize /ai status /ai model /ai toggle /ai personality /ai character /ai clear /rank /profile /leaderboard /warn /warns /delwarns /kick /ban /unban /purge /mute /unmute /tag /tagcreate /tagdelete /tags /birthday set /birthday list /birthday remove /ping /uptime /about /invite /panel /8ball /dice /coin /rps /trivia /slot /tictactoe /move
