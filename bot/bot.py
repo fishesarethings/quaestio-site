@@ -847,6 +847,21 @@ def pool_total_share() -> int:
     return int(row[0] or 0)
 
 
+def pool_leaders(limit=3):
+    """Top contributors by served requests — anonymous node IDs only."""
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT name, served, share FROM hosters WHERE enabled=1 AND served>0"
+            " ORDER BY served DESC, name LIMIT ?",
+            (max(1, min(limit, 10)),),
+        ).fetchall()
+        return [{"name": r["name"], "served": r["served"] or 0, "share": r["share"] or 0}
+                for r in rows]
+    finally:
+        conn.close()
+
+
 def pool_add(endpoint, model, share=50, name=None):
     """Add a contributor. Endpoint + model are encrypted at rest; the name is
     a random anonymous node ID unless one is supplied."""
@@ -2619,6 +2634,13 @@ async def pool_info(interaction: discord.Interaction):
         nodes, total = [], 0
     lines = ["**⚡ Community pool**",
              f"Anonymous nodes online: **{len(nodes)}** · shared capacity: **{total}%**"]
+    try:
+        leaders = pool_leaders(limit=3)
+        medals = ["🥇", "🥈", "🥉"]
+        for i, l in enumerate(leaders):
+            lines.append(f"{medals[i]} `{l['name']}` — {l['served']} served")
+    except Exception:
+        pass
     if interaction.guild is not None:
         try:
             cfg = guild_ai_config(interaction.guild.id)

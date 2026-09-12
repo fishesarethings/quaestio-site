@@ -1426,6 +1426,22 @@ async def api_pool_public():
             "served": int(row["t"] or 0)}
 
 
+@app.get("/api/pool/leaderboard")
+async def api_pool_leaderboard(limit: int = 10):
+    """Top contributors by requests served. Names are random node-xxxx IDs —
+    safe to show publicly, nothing links them to a person or box."""
+    limit = max(1, min(limit, 25))
+    conn = db()
+    rows = conn.execute(
+        "SELECT name, served, share FROM hosters WHERE enabled=1 AND served>0"
+        " ORDER BY served DESC, name LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return {"leaders": [{"name": r["name"], "served": r["served"] or 0,
+                         "share": r["share"] or 0} for r in rows]}
+
+
 POOL_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1456,6 +1472,9 @@ pre code{background:none;border:none;padding:0}
 .copybtn{position:absolute;top:8px;right:8px;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.5);color:#eef1f8;border-radius:8px;padding:4px 10px;font-size:.78rem;cursor:pointer}
 .copybtn:hover{background:rgba(99,102,241,.35)}
 .copybtn.ok{border-color:#34d399;color:#34d399}
+.leader{display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.06)}
+.leader:last-child{border-bottom:none}
+.leader .served{color:var(--muted)}
 ul{margin:8px 0 0 20px;color:var(--muted)}
 .links{margin-top:26px;color:var(--muted)}
 .links a{color:var(--cyan)}
@@ -1474,7 +1493,8 @@ a{color:inherit}
   </div>
   <div class="card"><h3>① Install</h3><pre><code id="cmd-install">curl -fsSL https://quaestio.online/bot/install.sh | bash</code><button class="copybtn" data-copy="cmd-install">⧉ Copy</button></pre></div>
   <div class="card"><h3>② Serve</h3><pre><code id="cmd-serve">quaestio pool-serve</code><button class="copybtn" data-copy="cmd-serve">⧉ Copy</button></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
-  <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>3x request limits, no quotas ever</li><li>🌟 contributor badge in <code>/ai status</code></li></ul></div>
+  <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>2–4x request limits by share (more compute = more headroom)</li><li>🌟 contributor badge in <code>/ai status</code> + leaderboard glory below</li></ul></div>
+  <div class="card"><h3>🏆 Top contributors</h3><p style="color:var(--muted)">Anonymous node IDs only — ranked by requests served.</p><div id="leaders"><p style="color:var(--muted)">Loading…</p></div></div>
   <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
 </div>
 <script>
@@ -1482,6 +1502,18 @@ fetch("/api/pool/public").then(r=>r.json()).then(s=>{
   document.getElementById("st-nodes").textContent = s.nodes ?? 0;
   document.getElementById("st-share").textContent = (s.total_share ?? 0) + "%";
   document.getElementById("st-served").textContent = s.served ?? 0;
+}).catch(()=>{});
+fetch("/api/pool/leaderboard").then(r=>r.json()).then(d=>{
+  const box = document.getElementById("leaders");
+  if (!box) return;
+  const medals = ["🥇","🥈","🥉"];
+  if (!d.leaders || !d.leaders.length) {
+    box.innerHTML = '<p style="color:var(--muted)">No served requests yet — run <code>quaestio pool-serve</code> and take the crown.</p>';
+    return;
+  }
+  box.innerHTML = d.leaders.map((l,i)=>
+    `<div class="leader"><span>${medals[i] || "▸"} ${l.name}</span><span class="served">${l.served} served · ${l.share}%</span></div>`
+  ).join("");
 }).catch(()=>{});
 document.querySelectorAll(".copybtn").forEach(btn=>{
   btn.addEventListener("click", async ()=>{
