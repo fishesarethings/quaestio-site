@@ -138,6 +138,16 @@ fi
 say "Installing dependencies…"
 "$VENV/bin/pip" --quiet install --upgrade pip
 "$VENV/bin/pip" --quiet install -r "$BOT_DIR/requirements.txt"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  # Stock python.org Mac Pythons ship without root certificates, which makes
+  # every broker call fail with CERTIFICATE_VERIFY_FAILED. Fix once here.
+  _pymajmin=$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "")
+  _certcmd="/Applications/Python ${_pymajmin}/Install Certificates.command"
+  if [[ -x "$_certcmd" ]]; then
+    say "Installing Python root certificates (fixes secure pool connections)…"
+    "$_certcmd" >/dev/null 2>&1 || true
+  fi
+fi
 
 # --- 3aa. Interactive install wizard (skip when non-interactive / no textual) ---
 # The wizard opens a full-screen TUI: the AI engine + web panel + pool choices,

@@ -353,12 +353,24 @@ def _broker_url_fallback():
             req = urllib.request.Request(
                 cand.rstrip("/") + "/api/health",
                 headers={"User-Agent": "Quaestio-pool/1.0"})
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with urllib.request.urlopen(req, timeout=8, context=_ssl_context()) as r:
                 if r.status == 200:
                     return cand
         except Exception:
             continue
     return primary
+
+
+def _ssl_context():
+    """TLS context that works on stock python.org Mac Pythons (no system
+    certs). Without this every broker call dies with CERTIFICATE_VERIFY_FAILED
+    and the join silently falls back to nowhere."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 def _pool_json(url, payload):
@@ -375,7 +387,7 @@ def _pool_json(url, payload):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=20, context=_ssl_context()) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         return {"error": f"broker {e.code}: {e.read().decode(errors='replace')[:140]}"}
@@ -673,6 +685,18 @@ def contribute():
         db_path = cand if os.path.isdir(BOT_DIR) else os.path.join(os.getcwd(), "quaestio.db")
     import sqlite3
     conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, endpoint TEXT, model TEXT,
+            share INTEGER DEFAULT 50, enabled INTEGER DEFAULT 1,
+            added_by TEXT, at TEXT, failed INTEGER DEFAULT 0,
+            down_until TEXT DEFAULT '', last_ok TEXT DEFAULT '',
+            last_fail TEXT DEFAULT '', node_secret_hash TEXT DEFAULT '',
+            served INTEGER DEFAULT 0, endpoint_hash TEXT DEFAULT '',
+            pull INTEGER DEFAULT 0, last_seen TEXT DEFAULT ''
+        )"""
+    )
     ehash = hashlib.sha256(endpoint.strip().rstrip("/").lower().encode()).hexdigest()
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, endpoint_hash) "

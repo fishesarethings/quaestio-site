@@ -325,7 +325,7 @@ class Connections(_NavScreen):
             yield Static(f"  [dim]Everything installs into: {cfg.install_dir} — change it on the folder step.[/dim]", classes="hint")
             mode = NavSelect(
                 [("This machine (recommended)", "local"), ("Another computer on your network", "remote")],
-                value=("remote" if cfg.remote_endpoint else "local"), id="mode", prompt="Pick the AI connection",
+                value=cfg.endpoint_mode, id="mode", prompt="Pick the AI connection",
             )
             yield mode
             remote = Input(placeholder="http://192.168.1.50:11434", value=cfg.remote_endpoint, id="remote")
@@ -739,9 +739,17 @@ PY="{PY}"
 [[ -d "$INSTALL_DIR" ]] || exit 0
 cd "$BOT_DIR"
 set -a; [[ -f .env ]] && source .env; set +a
-if grep -q "^POOL_NODE_SECRET=" .env 2>/dev/null; then
+if grep -q "^POOL_NODE_SECRET=.\\+" .env 2>/dev/null; then
   command -v ollama >/dev/null 2>&1 || exit 0
   pgrep -x ollama >/dev/null 2>&1 || nohup ollama serve >/dev/null 2>&1 &
+  # Registered pool node: serve jobs in the background so ticking "pool" in
+  # the installer actually hosts. Foreground keeps the bot if configured.
+  if [[ -n "${{BOT_TOKEN:-}}" ]]; then
+    nohup "$PY" "$BOT_DIR/quaestio.py" pool-serve >/dev/null 2>&1 &
+    exec "$PY" "$BOT_DIR/bot.py"
+  else
+    exec "$PY" "$BOT_DIR/quaestio.py" pool-serve
+  fi
 fi
 if [[ -n "${{BOT_TOKEN:-}}" ]]; then
   exec "$PY" "$BOT_DIR/bot.py"
@@ -823,6 +831,12 @@ def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, sha
     import urllib.request as _urlreq
     url = broker.rstrip("/") + "/api/pool/register"
     body = _json.dumps({"endpoint": endpoint, "model": model, "share": int(share)}).encode()
+    try:
+        import certifi as _certifi
+        import ssl as _ssl
+        _ctx = _ssl.create_default_context(cafile=_certifi.where())
+    except Exception:
+        _ctx = None
     req = _urlreq.Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
         # Cloudflare 403s Python-urllib/* — always send a real UA to our domains.
@@ -830,7 +844,11 @@ def _pool_join_remote(broker: str, join_key: str, endpoint: str, model: str, sha
         "X-Pool-Key": join_key or "",
     })
     try:
-        with _urlreq.urlopen(req, timeout=20) as resp:
+        if _ctx is not None:
+            _resp_ctx = _urlreq.urlopen(req, timeout=20, context=_ctx)
+        else:
+            _resp_ctx = _urlreq.urlopen(req, timeout=20)
+        with _resp_ctx as resp:
             data = _json.loads(resp.read().decode())
     except _urlerr.HTTPError as e:
         detail = e.read().decode(errors="replace")[:200]
