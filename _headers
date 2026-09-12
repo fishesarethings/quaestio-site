@@ -1,0 +1,10 @@
+/
+  Link: <https://quaestio.online/llms.txt>; rel="alternate"; type="text/markdown"; title="AI brief"
+  Link: <https://quaestio.online/api-catalog.json>; rel="service-desc"; type="application/json"; title="API catalog"
+  Link: <https://quaestio.online/auth.md>; rel="help"; title="Agent auth guide"
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+/*.json
+  Content-Type: application/json; charset=utf-8
+/*.txt
+  Content-Type: text/plain; charset=utf-8

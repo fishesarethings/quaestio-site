@@ -1,0 +1,15 @@
+{
+  "name": "Quaestio",
+  "description": "Free Discord AI companion (41 slash commands) plus an open community compute pool any box or browser can join.",
+  "url": "https://quaestio.online/",
+  "provider": {"name": "Quaestio", "url": "https://quaestio.online/"},
+  "version": "1.0",
+  "capabilities": ["discord-chat", "pool-inference", "moderation", "levels", "games"],
+  "skills": "https://quaestio.online/skills.md",
+  "auth": "https://quaestio.online/auth.md",
+  "endpoints": {
+    "admin": "https://admin.quaestio.online",
+    "pool": "https://pool.quaestio.online",
+    "catalog": "https://quaestio.online/api-catalog.json"
+  }
+}

@@ -8,6 +8,8 @@ Quaestio is a self-hosted Discord bot with a local AI brain (Ollama): keep-chatt
 - Lend compute to the community pool: `curl -fsSL https://quaestio.online/bot/install.sh | bash`, then `quaestio pool-serve`. Anonymous node IDs, encrypted endpoints, offline-friendly.
 - Pool status and join: https://pool.quaestio.online
 - Docs: https://quaestio.online/ — Features, Commands, Install, FAQ, Privacy, Terms.
+- Machine files: /skills.md (skill index), /auth.md (agent auth),
+  /api-catalog.json (API catalog), /agent.json (agent card).
 
 ## Commands (Discord slash)
 

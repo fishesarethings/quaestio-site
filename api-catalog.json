@@ -1,0 +1,32 @@
+{
+  "name": "quaestio-apis",
+  "base": "https://pool.quaestio.online",
+  "admin": "https://admin.quaestio.online",
+  "docs": {
+    "brief": "https://quaestio.online/llms.txt",
+    "skills": "https://quaestio.online/skills.md",
+    "auth": "https://quaestio.online/auth.md"
+  },
+  "public": [
+    {"method": "GET", "path": "/api/health", "desc": "Readiness: db + ollama flags."},
+    {"method": "GET", "path": "/api/pool/public", "desc": "Anonymous totals: nodes, share, served."},
+    {"method": "GET", "path": "/api/pool/leaderboard?limit=10", "desc": "Top anonymous contributors."}
+  ],
+  "contributor": [
+    {"method": "POST", "path": "/api/pool/register", "auth": "none; optional x-pool-key + node_secret for updates", "desc": "Join/update a node. {pull, model, share, endpoint?}."},
+    {"method": "POST", "path": "/api/pool/jobs/claim", "auth": "node_secret", "desc": "Oldest matching pending job or stale claim."},
+    {"method": "POST", "path": "/api/pool/jobs/complete", "auth": "node_secret", "desc": "Post result or error."},
+    {"method": "POST", "path": "/api/pool/me", "auth": "node_secret", "desc": "Own stats."},
+    {"method": "POST", "path": "/api/pool/rename", "auth": "node_secret", "desc": "Fresh node ID, weekly cooldown."},
+    {"method": "POST", "path": "/api/pool/unregister", "auth": "node_secret", "desc": "Leave; row removed."}
+  ],
+  "bot": [
+    {"method": "GET", "path": "/api/pool/nodes?limit=&offset=", "auth": "bot token", "desc": "Paginated candidates."},
+    {"method": "POST", "path": "/api/pool/report", "auth": "bot token", "desc": "Health report per node."}
+  ],
+  "notes": [
+    "HTTPS only; custom User-Agent required (Cloudflare challenges library defaults).",
+    "Write endpoints: 30 req/min/IP.",
+    "Endpoints/models encrypted at rest; node names are random and safe to quote."
+  ]
+}
