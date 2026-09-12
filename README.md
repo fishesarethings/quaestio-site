@@ -1,6 +1,6 @@
 # Quaestio
 
-**Your server's AI companion** — add the shared Quaestio bot to any Discord server in one click, then configure it in your web panel. No app creation, no tokens, no self-hosting required. Community hardware powers the AI; endpoints and prompts are encrypted end-to-end.
+**Your server's AI companion** — add the shared Quaestio bot to any Discord server in one click, then configure it in your web panel. No app creation, no tokens, no self-hosting required. Community hardware powers the AI; endpoints encrypted at rest, traffic TLS-encrypted in transit.
 
 🌐 **Live site:** https://quaestio.online · 🔒 [Privacy](https://quaestio.online/privacy.html) · 📜 [Terms](https://quaestio.online/terms.html)
 
@@ -222,3 +222,6 @@ Ollama and each carries its own permissive license — all fine to self-host:
 Because the model runs on your own hardware and no weights are redistributed as
 services, none of these require a paid license at normal scale. Which model a
 server uses is set by that server's admin (see `/ai model`).
+
+## License
+Proprietary — view-only ([LICENSE.md](LICENSE.md)). Code is split across [quaestio-bot](https://github.com/fishesarethings/quaestio-bot) (bot + installers) and [quaestio-admin](https://github.com/fishesarethings/quaestio-admin) (dashboard + pool broker). Do not copy, host, or redistribute.
