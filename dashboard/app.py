@@ -1541,10 +1541,109 @@ a{color:inherit}
   </div>
   <div class="card"><h3>① Install</h3><pre><code id="cmd-install">curl -fsSL https://quaestio.online/bot/install.sh | bash</code><button class="copybtn" data-copy="cmd-install">⧉ Copy</button></pre></div>
   <div class="card"><h3>② Serve</h3><pre><code id="cmd-serve">quaestio pool-serve</code><button class="copybtn" data-copy="cmd-serve">⧉ Copy</button></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
+  <div class="card"><h3>🌐 Or host right in this browser</h3>
+    <p style="color:var(--muted)">No install at all — the AI model runs on this page with WebGPU. Keep the tab open and it serves pool jobs like any other node.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+      <label style="font-size:.85rem">Model
+        <select id="web-model" style="display:block;margin-top:4px;background:#0b1120;color:var(--text);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:6px">
+          <option value="Qwen2.5-1.5B-Instruct-q4f32_1-MLC">Qwen 1.5B (~1 GB, recommended)</option>
+          <option value="Qwen2.5-0.5B-Instruct-q4f32_1-MLC">Qwen 0.5B (~400 MB, light)</option>
+        </select></label>
+      <label style="font-size:.85rem">Share
+        <select id="web-share" style="display:block;margin-top:4px;background:#0b1120;color:var(--text);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:6px">
+          <option value="10">10% — spare cycles</option>
+          <option value="25">25%</option>
+          <option value="50">50%</option>
+        </select></label>
+      <label style="font-size:.85rem;align-self:end"><input type="checkbox" id="web-battery" checked> Pause on battery</label>
+    </div>
+    <button class="copybtn" id="web-toggle" style="position:static">▶ Start browser hosting</button>
+    <span id="web-status" style="color:var(--muted);font-size:.85rem;margin-left:10px">idle</span>
+    <div id="web-prog" style="color:var(--muted);font-size:.85rem;margin-top:8px"></div>
+    <p style="color:var(--muted);font-size:.82rem;margin-top:10px">⚠️ Warnings: uses your GPU/CPU while serving (fan + battery); keep this tab open and your machine awake — closing it just idles you, nothing breaks; first start downloads the model once (~1 GB, cached after); needs a WebGPU browser (Chrome/Edge 113+, Safari 26+).</p>
+  </div>
   <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>2–4x request limits by share (more compute = more headroom)</li><li>🌟 contributor badge in <code>/ai status</code> + leaderboard glory below</li></ul></div>
   <div class="card"><h3>🏆 Top contributors</h3><p style="color:var(--muted)">Anonymous node IDs only — ranked by requests served.</p><div id="leaders"><p style="color:var(--muted)">Loading…</p></div></div>
   <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
 </div>
+<script type="module">
+import { CreateMLCEngine } from "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.79/+esm";
+const $ = (id) => document.getElementById(id);
+let engine = null, serving = false, served = 0, nodeSecret = localStorage.getItem("quaestio_pool_secret") || "";
+// Broker jobs use Ollama-style names; map the WebLLM build to its twin.
+const MODEL_MAP = {
+  "Qwen2.5-1.5B-Instruct-q4f32_1-MLC": "qwen2.5:1.5b",
+  "Qwen2.5-0.5B-Instruct-q4f32_1-MLC": "qwen2.5:0.5b",
+};
+const brokerModel = () => MODEL_MAP[$("web-model").value] || "qwen2.5:1.5b";
+async function api(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  if (!r.ok) throw new Error("broker " + r.status);
+  return r.json();
+}
+const setStatus = (t) => { $("web-status").textContent = t; };
+async function ensureNode() {
+  if (nodeSecret) return;
+  const reg = await api("/api/pool/register", {pull: 1, model: brokerModel(), share: parseInt($("web-share").value || "10", 10)});
+  nodeSecret = reg.node_secret;
+  localStorage.setItem("quaestio_pool_secret", nodeSecret);
+}
+async function batteryOk() {
+  if (!$("web-battery").checked) return true;
+  try {
+    const b = await navigator.getBattery();
+    return b.charging || (b.level ?? 1) > 0.2;
+  } catch { return true; }
+}
+async function loop() {
+  while (serving) {
+    try {
+      if (!await batteryOk()) { setStatus("paused (on battery)"); await new Promise(r => setTimeout(r, 10000)); continue; }
+      const {job} = await api("/api/pool/jobs/claim", {node_secret: nodeSecret, models: [brokerModel()]});
+      if (!job) { setStatus(`waiting for jobs · served ${served}`); await new Promise(r => setTimeout(r, 3000)); continue; }
+      setStatus(`working job ${job.id}…`);
+      const msgs = [];
+      if (job.system) msgs.push({role: "system", content: job.system});
+      msgs.push({role: "user", content: job.prompt});
+      try {
+        const out = await engine.chat.completions.create({
+          messages: msgs, temperature: job.temperature ?? 0.6,
+          max_tokens: job.max_tokens ?? 150, top_p: job.top_p ?? 0.9,
+        });
+        const text = (out.choices[0].message.content || "").trim();
+        if (!text) throw new Error("empty reply");
+        await api("/api/pool/jobs/complete", {node_secret: nodeSecret, job_id: job.id, response: text.slice(0, 4000)});
+        served++;
+        setStatus(`served ${served} · waiting…`);
+      } catch (e) {
+        try { await api("/api/pool/jobs/complete", {node_secret: nodeSecret, job_id: job.id, error: String(e && e.message || e).slice(0, 200)}); } catch {}
+        setStatus(`job failed, reported · served ${served}`);
+      }
+    } catch (e) {
+      setStatus("hiccup, retrying…");
+      await new Promise(r => setTimeout(r, 8000));
+    }
+  }
+}
+$("web-toggle").addEventListener("click", async () => {
+  if (serving) { serving = false; $("web-toggle").textContent = "▶ Start browser hosting"; setStatus("stopping…"); return; }
+  if (!navigator.gpu) { setStatus("this browser has no WebGPU — try Chrome/Edge."); return; }
+  try {
+    setStatus("registering…");
+    await ensureNode();
+    setStatus("loading model (first time ~1 GB)…");
+    $("web-prog").textContent = "";
+    engine = await CreateMLCEngine($("web-model").value, {initProgressCallback: (p) => {
+      $("web-prog").textContent = p.text || "";
+    }});
+    serving = true;
+    $("web-toggle").textContent = "■ Stop";
+    loop();
+  } catch (e) {
+    setStatus("failed to start: " + (e.message || e).toString().slice(0, 120));
+  }
+});
+</script>
 <script>
 fetch("/api/pool/public").then(r=>r.json()).then(s=>{
   document.getElementById("st-nodes").textContent = s.nodes ?? 0;

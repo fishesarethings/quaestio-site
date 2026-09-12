@@ -1261,7 +1261,8 @@ def _facts_text(parts) -> str:
             frag = re.sub(r"^(play|watch|read|love|like|enjoy)\s+", "", p, flags=re.I).strip()
             nice.append(f"{mapping.get(verb, 'likes')} {frag}" if frag else p)
         elif re.match(r"^work as\b", low, re.I):
-            nice.append(f"is {re.sub(r'^work as\s+', '', p, flags=re.I).strip()}")
+            frag = re.sub(r"^work as\s+", "", p, flags=re.I).strip()
+            nice.append(f"is {frag}")
         else:
             nice.append(f"likes {p}")
     return ", ".join(nice)
@@ -1304,7 +1305,8 @@ def profile_lines(guild_id, user_ids) -> list:
     for r in rows:
         if not r["facts"]:
             continue
-        out.append(f"{r['name']} — {_facts_text(r['facts'].split('\n'))}")
+        facts = _facts_text(r["facts"].split("\n"))
+        out.append(f"{r['name']} — {facts}")
     return out[:8]
 
 
@@ -1471,8 +1473,7 @@ async def human_type(channel, text, mention=""):
         return None
 
 
-_GOODBYE = (
-    "go away", "goodbye", "bye bye", " bye", "shoo", "get lost",
+_GOODBYE = (    "go away", "goodbye", "bye bye", " bye", "shoo", "get lost",
     "leave me alone", "stop talking", "stop replying", "done talking",
     "that's all", "thats all", "never mind", "nevermind", "go to sleep",
 )
@@ -1527,6 +1528,36 @@ def flood_ok(guild_id, user_id, mult=1) -> bool:
     return True
 
 
+def _log_ai_failure(kind: str, guild_id, model: str, exc: Exception):
+    """One journal line per AI failure so the monitor can alert on clusters.
+    User-visible notices stay throttled; logs stay complete."""
+    try:
+        print(f"quaestio: AI failure kind={kind} guild={guild_id} "
+              f"model={model} err={str(exc)[:120]}", flush=True)
+    except Exception:
+        pass
+
+
+async def _wait_ai_answer(fut, budget: float, on_slow=None):
+    """Wait for a queued AI answer with a progress nudge: after 45s of
+    silence call on_slow() once (e.g. 'still working…') instead of leaving
+    only the typing indicator, then wait out the remaining budget."""
+    first = min(45.0, budget)
+    done, _ = await asyncio.wait([fut], timeout=first)
+    if done:
+        return fut.result()
+    if on_slow is not None:
+        try:
+            await on_slow()
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    rest = max(1.0, budget - first)
+    done2, _ = await asyncio.wait([fut], timeout=rest)
+    if done2:
+        return fut.result()
+    raise asyncio.TimeoutError()
+
+
 async def ai_reply(message: discord.Message, *, ping: bool = True):
     """Passive AI chat: reply to an @-mention, or (ping=False) to a plain
     follow-up while conversation mode is active.
@@ -1563,16 +1594,24 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
         return await ask_ollama_any(cfg, full_prompt, asker=asker, system=persona_system)
 
     fut = ai_queue.submit(guild_id, factory)
+    budget = OLLAMA_TIMEOUT + 30
+
+    async def _slow():
+        await message.channel.send(
+            "⏳ Still working on it — the AI box is busy, your reply is queued.")
+
     async with message.channel.typing():
         try:
-            answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+            answer = await _wait_ai_answer(fut, budget, on_slow=_slow)
             await asyncio.sleep(0)
         except BusyError:
             return False
         except asyncio.TimeoutError:
+            _log_ai_failure("timeout", guild_id, cfg["model"], TimeoutError("waiter budget spent"))
             await _ai_error_notice(message.channel, guild_id, "⏳ The AI took too long — try again in a moment.")
             return False
         except ConnectionError as exc:
+            _log_ai_failure("connection", guild_id, cfg["model"], exc)
             await _ai_error_notice(
                 message.channel, guild_id,
                 NO_COMPUTE_NOTICE if _is_no_compute(exc) else f"⚠️ {exc}")
@@ -1664,15 +1703,19 @@ async def dm_chat(channel, question, cfg, mention="", user_id="", name=""):
 
     fut = ai_queue.submit("dm", factory)
     try:
-        answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+        answer = await _wait_ai_answer(
+            fut, OLLAMA_TIMEOUT + 30,
+            on_slow=lambda: channel.send("⏳ Still working on it — your reply is queued."))
         await asyncio.sleep(0)
     except BusyError as exc:
         await channel.send(str(exc))
         return
     except asyncio.TimeoutError:
+        _log_ai_failure("timeout", "dm", cfg["model"], TimeoutError("waiter budget spent"))
         await channel.send("The AI took too long. Try again in a moment.")
         return
     except ConnectionError as exc:
+        _log_ai_failure("connection", "dm", cfg["model"], exc)
         await channel.send(NO_COMPUTE_NOTICE if _is_no_compute(exc) else f"⚠️ {exc}")
         return
     except asyncio.CancelledError:
@@ -2723,17 +2766,26 @@ async def ask(interaction: discord.Interaction, prompt: str):
         return await ask_ollama_any(cfg, full_prompt, asker=interaction.user.display_name, system=persona_system)
 
     fut = ai_queue.submit(interaction.guild.id, factory)
+
+    async def _slow():
+        try:
+            await interaction.followup.send("⏳ Still working on it — your reply is queued.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+
     try:
         async with interaction.channel.typing():
-            answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30, on_slow=_slow)
             await asyncio.sleep(0)
     except BusyError as exc:
         await interaction.followup.send(str(exc), ephemeral=True)
         return
     except asyncio.TimeoutError:
+        _log_ai_failure("timeout", interaction.guild.id, cfg["model"], TimeoutError("waiter budget spent"))
         await interaction.followup.send("```The AI took too long. Try again in a moment.```", ephemeral=True)
         return
     except ConnectionError as exc:
+        _log_ai_failure("connection", interaction.guild.id, cfg["model"], exc)
         await interaction.followup.send(
             f"```{NO_COMPUTE_NOTICE}```" if _is_no_compute(exc) else f"```⚠️ {exc}```",
             ephemeral=True)
@@ -2819,16 +2871,25 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
                                     system="Summarize chat messages in a few short neutral bullets.")
 
     fut = ai_queue.submit(interaction.guild.id, factory)
+
+    async def _slow_sum():
+        try:
+            await interaction.followup.send("⏳ Still working on it — your summary is queued.")
+        except discord.HTTPException:
+            pass
+
     try:
         async with interaction.channel.typing():
-            answer = await asyncio.wait_for(fut, timeout=OLLAMA_TIMEOUT + 30)
+            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30, on_slow=_slow_sum)
     except BusyError as exc:
         await interaction.followup.send(str(exc))
         return
     except asyncio.TimeoutError:
+        _log_ai_failure("timeout", interaction.guild.id, cfg["model"], TimeoutError("waiter budget spent"))
         await interaction.followup.send("The AI took too long. Try again in a moment.")
         return
     except ConnectionError as exc:
+        _log_ai_failure("connection", interaction.guild.id, cfg["model"], exc)
         await interaction.followup.send(
             NO_COMPUTE_NOTICE if _is_no_compute(exc) else f"⚠️ {exc}")
         return
