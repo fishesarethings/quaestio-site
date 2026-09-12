@@ -503,9 +503,11 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
     except ConnectionError:
         pass
     last_err = None
+    attempted = 0
     for i, ep in enumerate(chain):
         if not ep:
             continue
+        attempted += 1
         t0 = time.time()
         # Primary gets the full budget (slow CPU boxes need it); fallbacks
         # fail fast so one hanging host can't stall the whole reply.
@@ -527,14 +529,50 @@ async def ask_ollama_any(cfg, prompt: str, temperature: float = 0.6, max_tokens:
             pool_record(ep, ok=False)
             last_err = exc
             continue
+    if not attempted:
+        raise ConnectionError("AI has no compute available right now.")
     raise last_err or ConnectionError("AI is offline — no model box replied.")
+
+
+def _is_no_compute(exc: Exception) -> bool:
+    """True when nothing could answer (no backends / all offline) as opposed
+    to a slow box timing out — the former gets the contributor nudge."""
+    msg = str(exc).lower()
+    return ("no compute available" in msg or "no model box replied" in msg
+            or "isn't reachable" in msg or "is offline" in msg)
+
+
+NO_COMPUTE_NOTICE = ("⚠️ No compute available right now — all AI boxes are busy or offline.\n"
+                     "Consider becoming a pool contributor: `quaestio pool-serve`")
 
 
 # Pool contributor perks — the incentive for lending compute. No quotas, no
 # caps: contributors (guilds with ai_contribute=1 and their own box
-# configured) earn priority routing (own box first), 3x flood limits, and a
-# visible "Pool contributor" badge in /ai status.
-CONTRIBUTOR_FLOOD_MULT = 3
+# configured) earn priority routing (own box first), scaled request limits,
+# and a visible "Pool contributor" badge in /ai status. More given =
+# more headroom: 10% share → 2x, 25%+ → 3x, 100% → 4x.
+def contributor_mult(guild_id) -> int:
+    """Flood-limit multiplier for a contributing guild, scaled by the linked
+    node's share (matched by endpoint hash — one indexed SELECT)."""
+    if not flag_on(guild_id, "ai_contribute", "0"):
+        return 1
+    own = (get_cfg(guild_id, "ai_endpoint", "") or "").strip()
+    if not own:
+        return 2
+    conn = db()
+    try:
+        row = conn.execute("SELECT share FROM hosters WHERE endpoint_hash=?",
+                           (_endpoint_hash(own),)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return 2
+    share = row["share"] or 0
+    if share >= 100:
+        return 4
+    if share >= 25:
+        return 3
+    return 2
 
 
 def guild_ai_config(guild_id):
@@ -1454,10 +1492,10 @@ FLOOD_GUILD_PER_MIN = 20
 _flood_hits = {}
 
 
-def flood_ok(guild_id, user_id, bonus=False) -> bool:
+def flood_ok(guild_id, user_id, mult=1) -> bool:
     """True if this user/guild may queue another AI call right now.
-    Contributors (bonus=True) get 3x headroom instead of any quota."""
-    mult = CONTRIBUTOR_FLOOD_MULT if bonus else 1
+    Contributors pass mult>1 (see contributor_mult) instead of any quota."""
+    mult = max(1, int(mult or 1))
     now = time.time()
     for key, limit in ((f"u:{guild_id}:{user_id}", FLOOD_USER_PER_MIN * mult),
                        (f"g:{guild_id}", FLOOD_GUILD_PER_MIN * mult)):
@@ -1489,7 +1527,7 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
     if not quota_ok(guild_id, cfg["quota"], cfg["window"]):
         await _quota_notice(message)
         return False
-    if not flood_ok(guild_id, message.author.id, bonus=cfg.get("contribute", False)):
+    if not flood_ok(guild_id, message.author.id, mult=contributor_mult(guild_id)):
         await _ai_error_notice(message.channel, guild_id,
                                "⏳ Slow down — too many AI requests at once. Try again in a minute.")
         return False
@@ -1518,7 +1556,9 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
             await _ai_error_notice(message.channel, guild_id, "⏳ The AI took too long — try again in a moment.")
             return False
         except ConnectionError as exc:
-            await _ai_error_notice(message.channel, guild_id, f"⚠️ {exc}")
+            await _ai_error_notice(
+                message.channel, guild_id,
+                NO_COMPUTE_NOTICE if _is_no_compute(exc) else f"⚠️ {exc}")
             return False
         except asyncio.CancelledError:
             raise
@@ -1616,7 +1656,7 @@ async def dm_chat(channel, question, cfg, mention="", user_id="", name=""):
         await channel.send("The AI took too long. Try again in a moment.")
         return
     except ConnectionError as exc:
-        await channel.send(f"⚠️ {exc}")
+        await channel.send(NO_COMPUTE_NOTICE if _is_no_compute(exc) else f"⚠️ {exc}")
         return
     except asyncio.CancelledError:
         raise
@@ -2553,7 +2593,8 @@ async def ai_status(interaction: discord.Interaction):
     if cfg.get("ai_character"):
         embed.add_field(name="Character", value=f"`{cfg['ai_character']}`", inline=False)
     if contributor:
-        embed.set_footer(text=f"🌟 Pool contributor badge — priority routing + {CONTRIBUTOR_FLOOD_MULT}x request limits")
+        mult = contributor_mult(interaction.guild.id)
+        embed.set_footer(text=f"🌟 Pool contributor badge — priority routing + {mult}x request limits")
     else:
         embed.set_footer(text="Lend compute with quaestio pool-serve to earn a contributor badge")
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -2583,10 +2624,10 @@ async def pool_info(interaction: discord.Interaction):
             cfg = guild_ai_config(interaction.guild.id)
             if cfg.get("contributor_perks"):
                 lines.append(f"🌟 This server contributes ✓ (priority routing, "
-                             f"{CONTRIBUTOR_FLOOD_MULT}x request limits)")
+                             f"{contributor_mult(interaction.guild.id)}x request limits)")
             else:
                 lines.append(f"Lend your box (`quaestio pool-serve`) and earn "
-                             f"priority routing, {CONTRIBUTOR_FLOOD_MULT}x request limits "
+                             f"priority routing, higher request limits "
                              f"and a contributor badge. Anonymous — random node ID only.")
         except Exception:
             pass
@@ -2630,7 +2671,7 @@ async def ask(interaction: discord.Interaction, prompt: str):
             ephemeral=True,
         )
         return
-    if not flood_ok(interaction.guild.id, interaction.user.id, bonus=cfg.get("contribute", False)):
+    if not flood_ok(interaction.guild.id, interaction.user.id, mult=contributor_mult(interaction.guild.id)):
         await interaction.response.send_message(
             "⏳ Slow down — too many AI requests at once. Try again in a minute.",
             ephemeral=True,
@@ -2669,7 +2710,9 @@ async def ask(interaction: discord.Interaction, prompt: str):
         await interaction.followup.send("```The AI took too long. Try again in a moment.```", ephemeral=True)
         return
     except ConnectionError as exc:
-        await interaction.followup.send(f"```⚠️ {exc}```", ephemeral=True)
+        await interaction.followup.send(
+            f"```{NO_COMPUTE_NOTICE}```" if _is_no_compute(exc) else f"```⚠️ {exc}```",
+            ephemeral=True)
         return
     except asyncio.CancelledError:
         raise
@@ -2722,7 +2765,7 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
             ephemeral=True,
         )
         return
-    if not flood_ok(interaction.guild.id, interaction.user.id, bonus=cfg.get("contribute", False)):
+    if not flood_ok(interaction.guild.id, interaction.user.id, mult=contributor_mult(interaction.guild.id)):
         await interaction.response.send_message(
             "⏳ Slow down — too many AI requests at once. Try again in a minute.",
             ephemeral=True,
@@ -2762,7 +2805,8 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         await interaction.followup.send("The AI took too long. Try again in a moment.")
         return
     except ConnectionError as exc:
-        await interaction.followup.send(f"⚠️ {exc}")
+        await interaction.followup.send(
+            NO_COMPUTE_NOTICE if _is_no_compute(exc) else f"⚠️ {exc}")
         return
     except asyncio.CancelledError:
         raise

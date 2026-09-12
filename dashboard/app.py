@@ -649,7 +649,7 @@ async def api_get_settings(request: Request, guild_id: int):
     settings["quota_effective"] = limits["quota"]
     settings["memory_effective"] = limits["memory"]
     settings["contributor_perks"] = limits.get("contributor_perks", False)
-    settings["contributor_bonus"] = {"flood_mult": 3}
+    settings["contributor_bonus"] = {"flood_mult": "2-4x by share"}
     settings["usage_now"] = usage_calls(guild_id, limits["window"])
     now = datetime.datetime.now(datetime.timezone.utc)
     w = limits["window"]
@@ -924,7 +924,10 @@ async def api_pool_register(request: Request):
                     "new": False, "status": "active" if enabled else "pending"}
     name = "node-" + secrets.token_hex(4)
     new_secret = secrets.token_urlsafe(24)
-    enabled = 1 if has_key else 0
+    # Auto-approve: anyone hosting anything earns rewards immediately, no
+    # manual step. Abuse is handled by reputation (fail-park below), broker
+    # rate limits, and anonymous IDs — not by a human gate.
+    enabled = 1
     conn.execute(
         "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash, endpoint_hash, pull)"
         " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?, ?, ?)",
@@ -1147,6 +1150,14 @@ async def api_jobs_complete(request: Request):
     if error:
         conn.execute("UPDATE pool_jobs SET status='failed', error=?, done_at=? WHERE id=? AND claimed_by=?",
                      (error, now, job_id, node["id"]))
+        # Reputation: consecutive worker failures park the node, same as push
+        # hosts — spam/garbage nodes remove themselves without human review.
+        conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now, node["id"]))
+        fails = conn.execute("SELECT failed FROM hosters WHERE id=?", (node["id"],)).fetchone()
+        if fails and (fails["failed"] or 0) >= 5:
+            until = (datetime.datetime.now(datetime.timezone.utc)
+                     + datetime.timedelta(seconds=600)).isoformat()
+            conn.execute("UPDATE hosters SET down_until=? WHERE id=?", (until, node["id"]))
     else:
         conn.execute("UPDATE pool_jobs SET status='done', result=?, done_at=? WHERE id=? AND claimed_by=?",
                      (response, now, job_id, node["id"]))
