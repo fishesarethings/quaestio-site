@@ -404,6 +404,20 @@ def _env_file_path():
     return os.path.join(BOT_DIR, ".env")
 
 
+def _write_env_key(key, value):
+    """Upsert one KEY=value in the install .env, preserving everything else."""
+    env_path = _env_file_path()
+    os.makedirs(os.path.dirname(env_path) or ".", exist_ok=True)
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            lines = f.readlines()
+    kept = [ln for ln in lines if not ln.strip().startswith((key + "=",))]
+    kept.append(f"{key}={value}\n")
+    with open(env_path, "w") as f:
+        f.writelines(kept)
+
+
 def _write_pool_creds(data):
     env_path = _env_file_path()
     os.makedirs(os.path.dirname(env_path) or ".", exist_ok=True)
@@ -517,6 +531,7 @@ def pool_serve():
         say(f"Registered as {reg.get('name', 'node-?')} (pull worker, {share}%).", GREEN)
     else:
         say("Registered node found — serving.", GREEN)
+    _verify_models(_probe_ollama_models("http://127.0.0.1:11434") or ["qwen2.5:1.5b"])
     say("Serving pool jobs — Ctrl-C to stop. Offline just idles.", GREEN)
     backoff = 5
     while True:
@@ -558,6 +573,55 @@ def pool_serve():
             say(f"Hiccup ({e}) — backing off…", YELLOW)
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
+
+# Models the pool trusts. Ollama can't run encrypted blobs, so protection is:
+# allowlist (unknown models are refused) + digest continuity (first-seen blob
+# hash pinned in .env; a swapped model screams instead of serving silently).
+MODELS_ALLOWED = ["qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b",
+                  "llama3.2:3b", "tinyllama:latest"]
+
+
+def _model_digest(model):
+    """Blob digest from `ollama show`, or '' if unknown."""
+    try:
+        p = subprocess.run(["ollama", "show", model], capture_output=True, text=True, timeout=15)
+        for line in (p.stdout or "").splitlines():
+            if line.strip().startswith("FROM "):
+                return line.strip().split(None, 1)[1][:120]
+    except Exception:
+        pass
+    return ""
+
+
+def _verify_models(models):
+    """Refuse unlisted models; pin first-seen digests; fail LOUD on change."""
+    import json as _json
+    allowed = set(MODELS_ALLOWED)
+    for m in models:
+        if m not in allowed:
+            boom(f"Model `{m}` isn't pool-approved (allows: {', '.join(MODELS_ALLOWED)}). "
+                 f"Remove it or pick an approved one.")
+    pins = {}
+    raw = read_env("MODEL_DIGESTS") or ""
+    try:
+        pins = _json.loads(raw) if raw else {}
+    except Exception:
+        pins = {}
+    changed = False
+    for m in models:
+        d = _model_digest(m)
+        if not d:
+            continue
+        if m in pins and pins[m] != d:
+            boom(f"Model `{m}` changed on disk since first run — refusing to serve "
+                 f"(possible substitution). Re-pull it or clear MODEL_DIGESTS to re-pin.")
+        if m not in pins:
+            pins[m] = d
+            changed = True
+    if changed:
+        _write_env_key("MODEL_DIGESTS", _json.dumps(pins))
+    say(f"Models verified ({len(models)} pinned).", GREEN)
 
 
 def _tailscale_ip():
@@ -651,6 +715,9 @@ def contribute():
         say(f"Model: {model} (auto)", DIM)
     else:
         model = input(f"Model you're sharing [default {default_model}]: ").strip() or default_model
+    if model not in MODELS_ALLOWED:
+        say(f"Note: `{model}` isn't pool-approved ({', '.join(MODELS_ALLOWED)}) — "
+            f"the pool may send you nothing. Prefer an approved one.", YELLOW)
     if _probe_ollama_models(endpoint):
         say("Endpoint answers — the pool will be able to reach it.", GREEN)
     else:

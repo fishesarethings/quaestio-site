@@ -1556,8 +1556,10 @@ a{color:inherit}
           <option value="50">50%</option>
         </select></label>
       <label style="font-size:.85rem;align-self:end"><input type="checkbox" id="web-battery" checked> Pause on battery</label>
+      <label style="font-size:.85rem;align-self:end"><input type="checkbox" id="web-auto"> Auto-start on page load</label>
     </div>
     <button class="copybtn" id="web-toggle" style="position:static">▶ Start browser hosting</button>
+    <button class="copybtn" id="web-forget" style="position:static" title="Unregister + forget this browser node">Forget node</button>
     <span id="web-status" style="color:var(--muted);font-size:.85rem;margin-left:10px">idle</span>
     <div id="web-prog" style="color:var(--muted);font-size:.85rem;margin-top:8px"></div>
     <p style="color:var(--muted);font-size:.82rem;margin-top:10px">⚠️ Warnings: uses your GPU/CPU while serving (fan + battery); keep this tab open and your machine awake — closing it just idles you, nothing breaks; first start downloads the model once (~1 GB, cached after); needs a WebGPU browser (Chrome/Edge 113+, Safari 26+).</p>
@@ -1582,6 +1584,34 @@ async function api(path, body) {
   return r.json();
 }
 const setStatus = (t) => { $("web-status").textContent = t; };
+function confetti() {
+  // Tiny dependency-free burst: 40 falling pieces, gone in ~1.5s.
+  const c = document.createElement("canvas");
+  c.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:9999";
+  document.body.appendChild(c);
+  const x = c.getContext("2d");
+  c.width = innerWidth; c.height = innerHeight;
+  const cols = ["#6366f1", "#22d3ee", "#34d399", "#f5c518", "#f472b6"];
+  const ps = Array.from({length: 40}, () => ({
+    x: innerWidth / 2 + (Math.random() - 0.5) * 220, y: innerHeight * 0.35,
+    vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 9 - 2,
+    s: Math.random() * 7 + 3, c: cols[Math.floor(Math.random() * cols.length)],
+    r: Math.random() * Math.PI,
+  }));
+  let f = 0;
+  const tick = () => {
+    x.clearRect(0, 0, c.width, c.height);
+    ps.forEach(p => {
+      p.x += p.vx; p.y += p.vy; p.vy += 0.45; p.r += 0.12;
+      x.save(); x.translate(p.x, p.y); x.rotate(p.r);
+      x.fillStyle = p.c; x.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6);
+      x.restore();
+    });
+    if (++f < 90) requestAnimationFrame(tick);
+    else c.remove();
+  };
+  tick();
+}
 async function ensureNode() {
   if (nodeSecret) return;
   const reg = await api("/api/pool/register", {pull: 1, model: brokerModel(), share: parseInt($("web-share").value || "10", 10)});
@@ -1615,6 +1645,9 @@ async function loop() {
         await api("/api/pool/jobs/complete", {node_secret: nodeSecret, job_id: job.id, response: text.slice(0, 4000)});
         served++;
         setStatus(`served ${served} · waiting…`);
+        confetti();
+        const st = $("st-served");
+        if (st) { st.style.transition = "transform .3s"; st.style.transform = "scale(1.25)"; setTimeout(() => st.style.transform = "", 320); }
       } catch (e) {
         try { await api("/api/pool/jobs/complete", {node_secret: nodeSecret, job_id: job.id, error: String(e && e.message || e).slice(0, 200)}); } catch {}
         setStatus(`job failed, reported · served ${served}`);
@@ -1643,6 +1676,60 @@ $("web-toggle").addEventListener("click", async () => {
     setStatus("failed to start: " + (e.message || e).toString().slice(0, 120));
   }
 });
+$("web-forget").addEventListener("click", async () => {
+  const sec = localStorage.getItem("quaestio_pool_secret") || "";
+  if (!sec) { setStatus("nothing to forget."); return; }
+  if (!confirm("Forget this browser node? It unregisters and a fresh ID is issued next start.")) return;
+  serving = false;
+  $("web-toggle").textContent = "▶ Start browser hosting";
+  try { await api("/api/pool/unregister", {node_secret: sec}); } catch {}
+  localStorage.removeItem("quaestio_pool_secret");
+  localStorage.removeItem("quaestio_pool_name");
+  setStatus("forgotten — fresh node next start.");
+});
+if (localStorage.getItem("quaestio_pool_auto") === "1") {
+  $("web-auto").checked = true;
+}
+$("web-auto").addEventListener("change", () => {
+  localStorage.setItem("quaestio_pool_auto", $("web-auto").checked ? "1" : "0");
+});
+// Live stats + board refresh without reload; highlights your own node.
+async function refreshStats() {
+  try {
+    const s = await (await fetch("/api/pool/public")).json();
+    $("st-nodes").textContent = s.nodes ?? 0;
+    $("st-share").textContent = (s.total_share ?? 0) + "%";
+    $("st-served").textContent = s.served ?? 0;
+  } catch {}
+  try {
+    const sec = localStorage.getItem("quaestio_pool_secret") || "";
+    let mine = localStorage.getItem("quaestio_pool_name") || "";
+    if (sec && !mine) {
+      try {
+        const me = await api("/api/pool/me", {node_secret: sec});
+        mine = me.name || "";
+        if (mine) localStorage.setItem("quaestio_pool_name", mine);
+      } catch {}
+    }
+    const d = await (await fetch("/api/pool/leaderboard")).json();
+    const box = $("leaders");
+    if (!box) return;
+    const medals = ["🥇","🥈","🥉"];
+    if (!d.leaders || !d.leaders.length) {
+      box.innerHTML = '<p style="color:var(--muted)">No served requests yet — run <code>quaestio pool-serve</code> and take the crown.</p>';
+      return;
+    }
+    box.innerHTML = d.leaders.map((l,i)=>{
+      const isMine = mine && l.name === mine;
+      return `<div class="leader"${isMine ? ' style="border:1px solid #6366f1;border-radius:8px;padding-left:8px"' : ""}><span>${medals[i] || "▸"} ${l.name}${isMine ? " (you)" : ""}</span><span class="served">${l.served} served · ${l.share}%</span></div>`;
+    }).join("");
+  } catch {}
+}
+setInterval(refreshStats, 15000);
+// Auto-start on page load (opt-in): needs WebGPU + a previous registration.
+if (localStorage.getItem("quaestio_pool_auto") === "1" && navigator.gpu) {
+  setTimeout(() => { if (!serving) $("web-toggle").click(); }, 1500);
+}
 </script>
 <script>
 fetch("/api/pool/public").then(r=>r.json()).then(s=>{
@@ -1663,6 +1750,7 @@ fetch("/api/pool/leaderboard").then(r=>r.json()).then(d=>{
   ).join("");
 }).catch(()=>{});
 document.querySelectorAll(".copybtn").forEach(btn=>{
+  if (!btn.dataset.copy) return;
   btn.addEventListener("click", async ()=>{
     const el = document.getElementById(btn.dataset.copy);
     const text = el ? el.textContent : "";

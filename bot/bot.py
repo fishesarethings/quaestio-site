@@ -1596,13 +1596,9 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
     fut = ai_queue.submit(guild_id, factory)
     budget = OLLAMA_TIMEOUT + 30
 
-    async def _slow():
-        await message.channel.send(
-            "⏳ Still working on it — the AI box is busy, your reply is queued.")
-
     async with message.channel.typing():
         try:
-            answer = await _wait_ai_answer(fut, budget, on_slow=_slow)
+            answer = await _wait_ai_answer(fut, budget)
             await asyncio.sleep(0)
         except BusyError:
             return False
@@ -1624,7 +1620,8 @@ async def ai_reply(message: discord.Message, *, ping: bool = True):
                 user_id=message.author.id, name=message.author.display_name)
     memory.push(guild_id, message.channel.id, "bot", answer[:400], cfg["memory"],
                 user_id=message.guild.me.id, name=message.guild.me.display_name)
-    await human_type(message.channel, answer, mention=message.author.mention if ping else "")
+    # No pings on passive replies — the message itself is the signal.
+    await human_type(message.channel, answer, mention="")
     return True
 
 
@@ -1703,9 +1700,9 @@ async def dm_chat(channel, question, cfg, mention="", user_id="", name=""):
 
     fut = ai_queue.submit("dm", factory)
     try:
-        answer = await _wait_ai_answer(
-            fut, OLLAMA_TIMEOUT + 30,
-            on_slow=lambda: channel.send("⏳ Still working on it — your reply is queued."))
+        # Typing the whole wait, like a normal chatbot — no stray messages.
+        async with channel.typing():
+            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30)
         await asyncio.sleep(0)
     except BusyError as exc:
         await channel.send(str(exc))
@@ -2714,7 +2711,7 @@ def _remember_reply(interaction, answer, prompt):
 @app_commands.describe(prompt="What you want to say or ask")
 async def ask(interaction: discord.Interaction, prompt: str):
     if interaction.guild is None:
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=False)
         try:
             await dm_chat(interaction.channel, prompt[:400], host_cfg(),
                           mention=interaction.user.mention,
@@ -2750,7 +2747,7 @@ async def ask(interaction: discord.Interaction, prompt: str):
             ephemeral=True,
         )
         return
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=False)
     # NOTE: no ephemeral "thinking…" followup — defer already shows thinking
     # in the client and the channel typing indicator covers the wait. The old
     # double indicator (message + typing) was just noise.
@@ -2766,16 +2763,9 @@ async def ask(interaction: discord.Interaction, prompt: str):
         return await ask_ollama_any(cfg, full_prompt, asker=interaction.user.display_name, system=persona_system)
 
     fut = ai_queue.submit(interaction.guild.id, factory)
-
-    async def _slow():
-        try:
-            await interaction.followup.send("⏳ Still working on it — your reply is queued.", ephemeral=True)
-        except discord.HTTPException:
-            pass
-
     try:
         async with interaction.channel.typing():
-            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30, on_slow=_slow)
+            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30)
             await asyncio.sleep(0)
     except BusyError as exc:
         await interaction.followup.send(str(exc), ephemeral=True)
@@ -2848,7 +2838,7 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
         )
         return
     limit = max(1, min(limit, 60))
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=False)
     texts = []
     async for msg in interaction.channel.history(limit=limit):
         if msg.author.bot:
@@ -2871,16 +2861,9 @@ async def summarize(interaction: discord.Interaction, limit: int = 20):
                                     system="Summarize chat messages in a few short neutral bullets.")
 
     fut = ai_queue.submit(interaction.guild.id, factory)
-
-    async def _slow_sum():
-        try:
-            await interaction.followup.send("⏳ Still working on it — your summary is queued.")
-        except discord.HTTPException:
-            pass
-
     try:
         async with interaction.channel.typing():
-            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30, on_slow=_slow_sum)
+            answer = await _wait_ai_answer(fut, OLLAMA_TIMEOUT + 30)
     except BusyError as exc:
         await interaction.followup.send(str(exc))
         return
