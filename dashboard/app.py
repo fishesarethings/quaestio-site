@@ -1440,8 +1440,11 @@ h1{font-size:clamp(30px,6vw,44px);line-height:1.1;letter-spacing:-.02em;margin:1
 .card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:20px;margin-bottom:14px}
 .card h3{margin-bottom:8px}
 code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:2px 7px;color:#c7d2fe}
-pre{background:#0b1120;border:1px solid rgba(255,255,255,.09);border-radius:10px;padding:14px;overflow-x:auto;margin-top:10px}
+pre{background:#0b1120;border:1px solid rgba(255,255,255,.09);border-radius:10px;padding:14px;overflow-x:auto;margin-top:10px;position:relative;padding-right:76px}
 pre code{background:none;border:none;padding:0}
+.copybtn{position:absolute;top:8px;right:8px;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.5);color:#eef1f8;border-radius:8px;padding:4px 10px;font-size:.78rem;cursor:pointer}
+.copybtn:hover{background:rgba(99,102,241,.35)}
+.copybtn.ok{border-color:#34d399;color:#34d399}
 ul{margin:8px 0 0 20px;color:var(--muted)}
 .links{margin-top:26px;color:var(--muted)}
 .links a{color:var(--cyan)}
@@ -1458,8 +1461,8 @@ a{color:inherit}
     <div class="stat"><div class="num" id="st-share">…</div><div class="lbl">capacity shared</div></div>
     <div class="stat"><div class="num" id="st-served">…</div><div class="lbl">requests served</div></div>
   </div>
-  <div class="card"><h3>① Install</h3><pre><code>curl -fsSL https://quaestio.online/bot/install.sh | bash</code></pre></div>
-  <div class="card"><h3>② Serve</h3><pre><code>quaestio pool-serve</code></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
+  <div class="card"><h3>① Install</h3><pre><code id="cmd-install">curl -fsSL https://quaestio.online/bot/install.sh | bash</code><button class="copybtn" data-copy="cmd-install">⧉ Copy</button></pre></div>
+  <div class="card"><h3>② Serve</h3><pre><code id="cmd-serve">quaestio pool-serve</code><button class="copybtn" data-copy="cmd-serve">⧉ Copy</button></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
   <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>3x request limits, no quotas ever</li><li>🌟 contributor badge in <code>/ai status</code></li></ul></div>
   <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
 </div>
@@ -1469,6 +1472,21 @@ fetch("/api/pool/public").then(r=>r.json()).then(s=>{
   document.getElementById("st-share").textContent = (s.total_share ?? 0) + "%";
   document.getElementById("st-served").textContent = s.served ?? 0;
 }).catch(()=>{});
+document.querySelectorAll(".copybtn").forEach(btn=>{
+  btn.addEventListener("click", async ()=>{
+    const el = document.getElementById(btn.dataset.copy);
+    const text = el ? el.textContent : "";
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    btn.textContent = "✓ Copied";
+    btn.classList.add("ok");
+    setTimeout(()=>{ btn.textContent = "⧉ Copy"; btn.classList.remove("ok"); }, 1600);
+  });
+});
 </script>
 </body>
 </html>

@@ -2523,30 +2523,40 @@ async def ai_status(interaction: discord.Interaction):
     cfg = guild_ai_config(interaction.guild.id)
     allowed_note = "everywhere" if not (cfg["ai_channels"] or "").strip() else "picked channels only"
     source_note = "shared Quaestio box" if cfg["source"] == "shared" else (f"your own box{f' (in community pool)' if cfg['contribute'] else ''}")
-    persona_note = ""
-    if cfg.get("ai_character"):
-        persona_note = f"\nCharacter: `{cfg['ai_character']}`"
     personality = get_cfg(interaction.guild.id, "ai_personality", "none")
     admin = is_admin(interaction.user)
-    endpoint_line = f"Endpoint: `{cfg['endpoint']}`\n" if admin else ""
-    perk_note = ""
-    if cfg.get("contributor_perks"):
-        perk_note = ("\n🌟 Pool contributor ✓ (priority routing, "
-                     f"{CONTRIBUTOR_FLOOD_MULT}x request limits)")
-    await interaction.response.send_message(
-        f"**AI settings**\n"
-        f"Enabled: {'✅' if cfg['enabled'] else '❌'}\n"
-        f"Source: {source_note}\n"
-        f"Model: `{cfg['model']}`\n"
-        f"{endpoint_line}"
-        f"Personality: `{personality or 'none'}` · Memory: {cfg['memory']} turns/channel\n"
-        f"Quota: {cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}\n{persona_note}{perk_note}"
-        f"\nReplies on mention: {'✅' if cfg['ai_mention'] else '❌'}\n"
-        f"Conversation mode: {'✅ stays ' + str(cfg['conv_minutes']) + ' min after a reply' if cfg['conv'] else '❌ (needs @ each time)'}\n"
-        f"Allowed channels: {allowed_note}\n"
-        f"Creativity: {cfg['temperature']} · Max reply: {cfg['max_tokens']} tokens",
-        ephemeral=True,
+    contributor = bool(cfg.get("contributor_perks"))
+    embed = discord.Embed(
+        title="🌟 Quaestio AI — Pool Contributor" if contributor else "Quaestio AI settings",
+        color=0xF5C518 if contributor else 0xA78BFA,
     )
+    embed.add_field(name="Enabled", value="✅" if cfg["enabled"] else "❌", inline=True)
+    embed.add_field(name="Source", value=source_note, inline=True)
+    embed.add_field(name="Model", value=f"`{cfg['model']}`", inline=True)
+    if admin:
+        embed.add_field(name="Endpoint", value=f"`{cfg['endpoint']}`", inline=False)
+    embed.add_field(name="Personality",
+                    value=f"`{personality or 'none'}` · {cfg['memory']} turns/channel",
+                    inline=False)
+    embed.add_field(name="Quota",
+                    value=f"{cfg['quota']} calls/{cfg['window']}h {'(unlimited)' if not cfg['quota'] else ''}",
+                    inline=True)
+    embed.add_field(name="Creativity",
+                    value=f"{cfg['temperature']} · {cfg['max_tokens']} tokens", inline=True)
+    embed.add_field(
+        name="Chat",
+        value=(f"Replies on mention: {'✅' if cfg['ai_mention'] else '❌'}\n"
+               f"Conversation mode: {'✅ stays ' + str(cfg['conv_minutes']) + ' min' if cfg['conv'] else '❌'}\n"
+               f"Allowed channels: {allowed_note}"),
+        inline=False,
+    )
+    if cfg.get("ai_character"):
+        embed.add_field(name="Character", value=f"`{cfg['ai_character']}`", inline=False)
+    if contributor:
+        embed.set_footer(text=f"🌟 Pool contributor badge — priority routing + {CONTRIBUTOR_FLOOD_MULT}x request limits")
+    else:
+        embed.set_footer(text="Lend compute with quaestio pool-serve to earn a contributor badge")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @AI_GROUP.command(name="clear", description="Forget this channel's conversation memory.")
