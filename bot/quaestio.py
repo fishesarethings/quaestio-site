@@ -337,11 +337,11 @@ def _anon_name() -> str:
 
 
 def _broker_url():
-    # admin.quaestio.online today; flip to pool.quaestio.online the moment its
-    # DNS exists (pool-serve already prefers it via _broker_url_fallback).
+    # pool.quaestio.online is the public contributor front door (DNS live);
+    # admin.quaestio.online stays as fallback.
     return ((os.environ.get("POOL_BROKER_URL") or "").strip()
             or (read_env("POOL_BROKER_URL") or "").strip()
-            or "https://admin.quaestio.online")
+            or "https://pool.quaestio.online")
 
 
 def _broker_url_fallback():
