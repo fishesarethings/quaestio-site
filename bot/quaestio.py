@@ -205,7 +205,8 @@ def update():
     say("Updating bot code from GitHub…")
     base = os.environ.get("QUAESTIO_SRC",
                           "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
-    for f in ("bot.py", "config.py", "requirements.txt", ".env.example", "quaestio.py"):
+    for f in ("bot.py", "config.py", "requirements.txt", ".env.example", "quaestio.py",
+                "install_wizard.py"):
         subprocess.run(["curl", "-fsSL", f"{base}/{f}", "-o", os.path.join(BOT_DIR, f)])
     subprocess.run([venv_python(), "-m", "pip", "install", "--quiet",
                     "-r", os.path.join(BOT_DIR, "requirements.txt")])
