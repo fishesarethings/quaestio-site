@@ -1,0 +1,1779 @@
+"""Quaestio admin dashboard — web UI for server settings.
+
+Companion to the bot. Shares the same SQLite DB and encryption key, so settings
+changed here are respected by the bot immediately (no bot restart needed).
+
+Run:
+  uvicorn app:app --host 127.0.0.1 --port 8900
+Env:
+  DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET  Discord OAuth2 app
+  DISCORD_REDIRECT_URI                        e.g. https://admin.quaestio.online/auth/callback
+  SECRET_KEY                                   session signing key
+  DB_PATH                                     same DB as the bot
+  QUAESTIO_KEY_FILE                           same keyfile as the bot
+"""
+
+import datetime
+import hashlib
+import json
+import os
+import secrets
+import shutil
+import sqlite3
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/bot")
+import config as qconfig  # noqa: E402
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE, "..", "bot", "quaestio.db"))
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
+# Only these models show up in the AI model picker. Everything else on a box
+# (phi, gemma, future pulls, …) stays hidden so members see a curated menu.
+ALLOWED_MODELS = [
+    "qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b",
+    "tinyllama:latest", "llama3.2:3b",
+]
+
+CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
+CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
+REDIRECT_URI = os.environ.get(
+    "DISCORD_REDIRECT_URI", "https://admin.quaestio.online/auth/callback"
+)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+SCOPES = "identify guilds"
+
+API = "https://discord.com/api/v10"
+OAUTH_AUTH = "https://discord.com/oauth2/authorize"
+ADMIN_BITS = 1 << 3  # ADMINISTRATOR
+INVITE_PERMS = "1101994781766"  # same permission set the bot uses everywhere
+
+HOST_ADMIN_IDS = {i.strip() for i in os.environ.get("HOST_ADMIN_IDS", "").split(",") if i.strip()}
+
+app = FastAPI(title="Quaestio admin")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.mount("/static", StaticFiles(directory=os.path.join(BASE, "static")), name="static")
+
+
+@app.get("/api/health")
+async def api_health():
+    """Readiness probe for uptime checks (no auth): db + ollama reachability."""
+    out = {"ok": True, "db": False, "ollama": False}
+    try:
+        conn = db()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        out["db"] = True
+    except Exception:
+        out["ok"] = False
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            out["ollama"] = r.status_code == 200
+    except Exception:
+        pass
+    return out
+
+# Login sessions keyed by a random bearer token (no cookies — Safari-safe OAuth).
+# In-memory: a dashboard restart signs everyone out, which is fine for a panel.
+SESSIONS = {}
+
+
+# ---------------------------------------------------------------------------
+# DB (shared with the bot)
+# ---------------------------------------------------------------------------
+
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def db_init():
+    conn = db()
+    conn.executescript(
+        """CREATE TABLE IF NOT EXISTS config (
+            guild_id TEXT, key TEXT, value TEXT,
+            PRIMARY KEY (guild_id, key)
+        );
+        CREATE TABLE IF NOT EXISTS ai_presets (
+            guild_id TEXT, kind TEXT, name TEXT, text TEXT, emoji TEXT DEFAULT '✨',
+            PRIMARY KEY (guild_id, kind, name)
+        );
+        CREATE TABLE IF NOT EXISTS profiles (
+            guild_id TEXT, user_id TEXT, name TEXT, facts TEXT, at TEXT,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS warned (
+            guild_id TEXT, user_id TEXT, reason TEXT, at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS hosters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, endpoint TEXT, model TEXT,
+            share INTEGER DEFAULT 50, enabled INTEGER DEFAULT 1,
+            added_by TEXT, at TEXT
+        );"""
+    )
+    _migrate_pool_health(conn)
+    _migrate_pool_broker(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
+    if "user_id" not in cols:
+        conn.execute("ALTER TABLE memory ADD COLUMN user_id TEXT DEFAULT ''")
+    if "name" not in cols:
+        conn.execute("ALTER TABLE memory ADD COLUMN name TEXT DEFAULT ''")
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(ai_presets)").fetchall()}
+    if "emoji" not in pcols:
+        conn.execute("ALTER TABLE ai_presets ADD COLUMN emoji TEXT DEFAULT '✨'")
+    conn.commit()
+    _migrate_pool_anonymize(conn)
+    conn.close()
+
+
+def _migrate_pool_health(conn):
+    """Pool-host health tracking (shared schema with the bot)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(hosters)").fetchall()}
+    for col, ddl in (("failed", "ALTER TABLE hosters ADD COLUMN failed INTEGER DEFAULT 0"),
+                     ("down_until", "ALTER TABLE hosters ADD COLUMN down_until TEXT DEFAULT ''"),
+                     ("last_ok", "ALTER TABLE hosters ADD COLUMN last_ok TEXT DEFAULT ''"),
+                     ("last_fail", "ALTER TABLE hosters ADD COLUMN last_fail TEXT DEFAULT ''"),
+                     ("endpoint_hash", "ALTER TABLE hosters ADD COLUMN endpoint_hash TEXT DEFAULT ''")):
+        if col not in cols:
+            conn.execute(ddl)
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_hosters_enabled ON hosters(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_hash ON hosters(endpoint_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_down ON hosters(down_until)",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
+
+
+def _migrate_pool_broker(conn):
+    """Community-pool broker secret so remote nodes can update/leave by proof,
+    plus a request counter so a node can see its contributions."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(hosters)").fetchall()}
+    if "node_secret_hash" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN node_secret_hash TEXT DEFAULT ''")
+    if "served" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN served INTEGER DEFAULT 0")
+    if "pull" not in cols:
+        # Pull workers call OUT to the broker (NAT-proof, no Tailnet, no port
+        # forward) instead of receiving inbound calls.
+        conn.execute("ALTER TABLE hosters ADD COLUMN pull INTEGER DEFAULT 0")
+    if "last_seen" not in cols:
+        conn.execute("ALTER TABLE hosters ADD COLUMN last_seen TEXT DEFAULT ''")
+    if "renamed_at" not in cols:
+        # Privacy renames (rate-limited, see /api/pool/rename).
+        conn.execute("ALTER TABLE hosters ADD COLUMN renamed_at TEXT DEFAULT ''")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pool_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt TEXT, system TEXT, model TEXT,
+            temperature REAL DEFAULT 0.6, max_tokens INTEGER DEFAULT 150,
+            top_p REAL DEFAULT 0.9, repeat_penalty REAL DEFAULT 1.15,
+            stop TEXT DEFAULT '[]',
+            status TEXT DEFAULT 'pending',
+            result TEXT DEFAULT '', error TEXT DEFAULT '',
+            created_at TEXT DEFAULT '', claimed_at TEXT DEFAULT '',
+            done_at TEXT DEFAULT '', claimed_by INTEGER DEFAULT 0, tries INTEGER DEFAULT 0
+        )"""
+    )
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON pool_jobs(status, model, id)",
+        "CREATE INDEX IF NOT EXISTS idx_hosters_pull ON hosters(pull, enabled)",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
+
+
+def _migrate_pool_anonymize(conn):
+    """One-time privacy migration: encrypt leftover plaintext endpoints/models
+    and replace any real-name labels with anonymous node IDs so identities
+    can't leak from old rows."""
+    import secrets as _secrets
+    rows = conn.execute("SELECT id, name, endpoint, model FROM hosters").fetchall()
+    for r in rows:
+        cur_name = (r["name"] or "").strip()
+        if not cur_name.startswith("node-"):
+            conn.execute("UPDATE hosters SET name=? WHERE id=?",
+                         ("node-" + _secrets.token_hex(2), r["id"]))
+        ep = r["endpoint"] or ""
+        if ep and not ep.startswith("enc:"):
+            conn.execute("UPDATE hosters SET endpoint=? WHERE id=?",
+                         (qconfig.maybe_encrypt("pool_endpoint", ep), r["id"]))
+        m = r["model"] or ""
+        if m and not m.startswith("enc:"):
+            conn.execute("UPDATE hosters SET model=? WHERE id=?",
+                         (qconfig.maybe_encrypt("pool_model", m), r["id"]))
+    conn.commit()
+
+
+db_init()
+
+
+def get_cfg(guild_id, key, default=None):
+    conn = db()
+    row = conn.execute(
+        "SELECT value FROM config WHERE guild_id=? AND key=?",
+        (str(guild_id), key),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return default
+    return qconfig.maybe_decrypt(key, row["value"])
+
+
+def get_all_cfg(guild_id, keys, defaults=None):
+    """Batch-fetch config keys in one SQLite round-trip (fixes N+1 on settings load)."""
+    defaults = defaults or {}
+    conn = db()
+    rows = conn.execute(
+        f"SELECT key, value FROM config WHERE guild_id=? AND key IN ({','.join('?' * len(keys))})",
+        [str(guild_id), *keys],
+    ).fetchall()
+    conn.close()
+    found = {r["key"]: qconfig.maybe_decrypt(r["key"], r["value"]) for r in rows}
+    return {k: found.get(k, defaults.get(k)) for k in keys}
+
+
+def set_cfg(guild_id, key, value):
+    conn = db()
+    conn.execute(
+        """INSERT INTO config (guild_id, key, value) VALUES (?, ?, ?)
+           ON CONFLICT(guild_id, key) DO UPDATE SET value = excluded.value""",
+        (str(guild_id), key, qconfig.maybe_encrypt(key, str(value))),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Discord OAuth
+# ---------------------------------------------------------------------------
+
+async def exchange_code(code: str) -> dict:
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{API}/oauth2/token",
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT_URI,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if r.status_code != 200:
+            raise HTTPException(400, "OAuth exchange failed")
+        data = r.json()
+        me = await client.get(
+            f"{API}/users/@me",
+            headers={"Authorization": f"Bearer {data['access_token']}"},
+        )
+        guilds = await client.get(
+            f"{API}/users/@me/guilds",
+            headers={"Authorization": f"Bearer {data['access_token']}"},
+        )
+    return {
+        "user": me.json(),
+        "guilds": guilds.json() if guilds.status_code == 200 else [],
+    }
+
+
+def session_user(request: Request) -> dict:
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        data = SESSIONS.get(auth[7:].strip())
+        if data:
+            return data
+    raise HTTPException(401, "Not signed in")
+
+
+def admin_guilds(user: dict) -> list:
+    return [
+        g
+        for g in user.get("guilds", [])
+        if g.get("owner") or (int(g.get("permissions", 0)) & ADMIN_BITS)
+    ]
+
+
+def require_admin_guild(request: Request, guild_id: int) -> dict:
+    """The caller must be an admin of the given Discord server."""
+    data = session_user(request)
+    g = next(
+        (x for x in data.get("guilds", []) if str(x.get("id")) == str(guild_id)),
+        None,
+    )
+    if not g or not (g.get("owner") or int(g.get("permissions", 0)) & ADMIN_BITS):
+        raise HTTPException(403, "Admin of this server required")
+    return data
+
+
+_bot_guild_ids: set | None = None
+_bot_guilds_at = 0.0
+
+
+async def bot_guild_ids() -> set:
+    """IDs of guilds the bot is currently in (cached 60s)."""
+    global _bot_guild_ids, _bot_guilds_at
+    now = time.time()
+    if _bot_guild_ids is not None and now - _bot_guilds_at < 60:
+        return _bot_guild_ids
+    ids = set()
+    if BOT_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{API}/users/@me/guilds",
+                    headers={"Authorization": f"Bot {BOT_TOKEN}"},
+                )
+            if r.status_code == 200:
+                ids = {str(g["id"]) for g in r.json()}
+        except Exception:
+            pass
+    _bot_guild_ids = ids
+    _bot_guilds_at = now
+    return ids
+
+
+def invite_url(guild_id) -> str:
+    return (
+        f"{OAUTH_AUTH}?client_id={CLIENT_ID}&permissions={INVITE_PERMS}"
+        f"&scope=bot%20applications.commands&guild_id={guild_id}"
+    )
+
+
+_app_owner_id = None
+_app_owner_at = 0.0
+
+
+async def _application_owner_id() -> str:
+    """Discord app owner (usually the host operator). Cached 1h."""
+    global _app_owner_id, _app_owner_at
+    now = time.time()
+    if _app_owner_id is not None and now - _app_owner_at < 3600:
+        return _app_owner_id
+    owner = ""
+    if BOT_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{API}/oauth2/applications/@me",
+                    headers={"Authorization": f"Bot {BOT_TOKEN}"},
+                )
+            if r.status_code == 200:
+                owner = str((r.json().get("owner") or {}).get("id", ""))
+        except Exception:
+            pass
+    _app_owner_id = owner
+    _app_owner_at = now
+    return owner
+
+
+async def host_admin_ids() -> set:
+    """Who may see the Host tab / host settings. Explicit list, else app owner."""
+    if HOST_ADMIN_IDS:
+        return HOST_ADMIN_IDS
+    owner = await _application_owner_id()
+    return {owner} if owner else set()
+
+
+@app.get("/auth/login")
+async def auth_login():
+    return RedirectResponse(
+        f"{OAUTH_AUTH}?client_id={CLIENT_ID}"
+        f"&redirect_uri={urllib.parse.quote(REDIRECT_URI, safe='')}"
+        f"&response_type=code&scope={SCOPES}"
+    )
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request, code: str):
+    try:
+        data = await exchange_code(code)
+    except HTTPException:
+        return RedirectResponse("/?error=login")
+    if not data.get("guilds"):
+        return RedirectResponse("/?error=needadmin")
+    token = secrets.token_urlsafe(32)
+    SESSIONS[token] = data
+    return RedirectResponse(f"/#token={token}")
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request, token: str = ""):
+    SESSIONS.pop(token, None)
+    return RedirectResponse("/")
+
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/me")
+async def api_me(request: Request):
+    data = session_user(request)
+    user = data["user"]
+    admins = await host_admin_ids()
+    is_host_admin = str(user.get("id")) in admins
+    bots = await bot_guild_ids()
+    guilds = []
+    for g in data.get("guilds", []):
+        gid = str(g.get("id"))
+        can_manage = bool(g.get("owner")) or bool(int(g.get("permissions", 0)) & ADMIN_BITS)
+        present = gid in bots
+        guilds.append({
+            "id": gid,
+            "name": g.get("name"),
+            "icon": g.get("icon"),
+            "owner": bool(g.get("owner")),
+            "can_manage": can_manage,
+            "bot_present": present,
+            "invite_url": invite_url(gid) if not present else "",
+        })
+    return {"user": user, "guilds": guilds, "is_host_admin": is_host_admin}
+
+
+HOST_ID = "host"
+
+
+def host_default(key, default=None):
+    return get_cfg(HOST_ID, key, default)
+
+
+def model_fallback(guild_id):
+    """Endpoint used to scan models: always the host's in managed mode."""
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    if managed:
+        return get_cfg("host", "ai_endpoint", OLLAMA_BASE_URL)
+    return get_cfg(guild_id, "ai_endpoint", OLLAMA_BASE_URL)
+
+
+# ---------------------------------------------------------------------------
+# Channel / role references (so the panel shows names, not bare IDs)
+# ---------------------------------------------------------------------------
+
+REF_CACHE = {}
+REF_CACHE_AT = {}
+
+
+async def guild_refs(guild_id: str) -> dict:
+    """Text channels + assignable roles for the name pickers (bot token, cached)."""
+    now = time.time()
+    cached = REF_CACHE.get(guild_id)
+    if cached and now - REF_CACHE_AT.get(guild_id, 0) < 90:
+        return cached
+    out = {"channels": [], "roles": []}
+    if BOT_TOKEN:
+        async with httpx.AsyncClient(timeout=10) as client:
+            headers = {"Authorization": f"Bot {BOT_TOKEN}"}
+            try:
+                r = await client.get(f"{API}/guilds/{guild_id}/channels", headers=headers)
+                if r.status_code == 200:
+                    chans = sorted(
+                        (
+                            c for c in r.json()
+                            if c.get("type") in (0, 5, 15) and c.get("name")
+                        ),
+                        key=lambda c: (c.get("position", 0), c.get("name", "")),
+                    )
+                    out["channels"] = [
+                        {"id": str(c["id"]), "name": c["name"]} for c in chans
+                    ]
+            except Exception:
+                pass
+            try:
+                r = await client.get(f"{API}/guilds/{guild_id}/roles", headers=headers)
+                if r.status_code == 200:
+                    roles = [
+                        rt for rt in r.json()
+                        if str(rt.get("id")) != str(guild_id) and not rt.get("managed")
+                    ]
+                    roles.sort(key=lambda rt: rt.get("position", 0), reverse=True)
+                    out["roles"] = [
+                        {"id": str(rt["id"]), "name": rt["name"]} for rt in roles
+                    ]
+            except Exception:
+                pass
+    REF_CACHE[guild_id] = out
+    REF_CACHE_AT[guild_id] = now
+    # Bound the caches so a flood of guild IDs can't grow them forever.
+    if len(REF_CACHE) > 500:
+        oldest = sorted(REF_CACHE_AT, key=lambda k: REF_CACHE_AT[k])[:100]
+        for k in oldest:
+            REF_CACHE.pop(k, None)
+            REF_CACHE_AT.pop(k, None)
+    return out
+
+
+@app.get("/api/guilds/{guild_id}/refs")
+async def api_refs(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    return await guild_refs(str(guild_id))
+
+
+@app.get("/api/guilds/{guild_id}/models")
+async def api_models(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    managed = get_cfg("host", "host_mode", "managed") != "decentral"
+    endpoint = model_fallback(guild_id)
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.get(f"{endpoint}/api/tags")
+            data = r.json()
+        names = [m["name"] for m in data.get("models", []) if m.get("name") and m["name"] in ALLOWED_MODELS]
+        return {"endpoint": "" if managed else endpoint, "models": names}
+    except Exception as exc:
+        return JSONResponse({"endpoint": "" if managed else endpoint, "models": [], "error": str(exc)})
+
+
+SETTING_KEYS = [
+    "ai_enabled", "ai_model", "ai_endpoint", "ai_memory", "ai_instructions",
+    "ai_quota", "ai_channels", "ai_mention", "ai_temperature", "ai_max_tokens",
+    "ai_source", "ai_contribute", "ai_window", "ai_personality", "ai_character",
+    "ai_conv", "ai_conv_minutes",
+    "welcome_enabled", "welcome_channel", "welcome_message",
+    "welcome_role", "levelrole", "level_announce", "xp_enabled", "warnlimit",
+    "xp_spam", "xp_min_words", "xp_max_words", "xp_cooldown",
+    "birthday_enabled", "birthday_channel",
+]
+
+
+def usage_bucket(window: int) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if window <= 1:
+        return now.strftime("%Y%m%d%H")
+    if window <= 6:
+        return now.strftime("%Y%m%d") + str(now.hour // 6)
+    return now.strftime("%Y%m%d")
+
+
+def usage_calls(guild_id, window: int = 6) -> int:
+    """AI calls already used in the current quota window (0 if none)."""
+    bucket = usage_bucket(window)
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT calls FROM usage WHERE guild_id=? AND bucket=?",
+            (str(guild_id), bucket),
+        ).fetchone()
+        return row["calls"] if row else 0
+    finally:
+        conn.close()
+
+
+def effective_ai_limits(guild_id, _pre=None):
+    """Effective quota/memory/endpoint after host caps — mirrors the bot's merge."""
+    _pre = _pre or {}
+
+    def _g(gid, key, default=""):
+        ck = f"{gid}:{key}"
+        if ck in _pre:
+            return _pre[ck]
+        return get_cfg(gid, key, default)
+
+    def _to_int(v, default=0):
+        try:
+            return int(str(v).strip()) if str(v).strip() else default
+        except (ValueError, TypeError):
+            return default
+
+    managed = _g("host", "host_mode", "managed") != "decentral"
+    source = (_g(guild_id, "ai_source", "shared") or "shared").strip().lower()
+    window = max(1, _to_int(_g(guild_id, "ai_window", "6") or 6, 6))
+    host_mem_raw = _g("host", "ai_memory", "")
+    host_quota_raw = _g("host", "ai_quota", "")
+    host_mem = _to_int(host_mem_raw)
+    host_quota = _to_int(host_quota_raw)
+    mem_raw = _g(guild_id, "ai_memory", "")
+    quota_raw = _g(guild_id, "ai_quota", "")
+    memory = _to_int(mem_raw, host_mem or 8)
+    quota = _to_int(quota_raw, host_quota)
+    if source == "self":
+        endpoint = (_g(guild_id, "ai_endpoint", "") or "http://127.0.0.1:11434").strip()
+    else:
+        endpoint = ""  # shared host box is hidden from server admins
+        if managed:
+            if host_mem:
+                memory = min(memory, host_mem)
+            if host_quota:
+                quota = min(quota, host_quota)
+    # Contributor perks mirror the bot: priority routing of your own box plus
+    # higher request limits — no quotas, no caps.
+    perks = False
+    if (_g(guild_id, "ai_contribute", "0") or "0").strip().lower() not in ("", "0", "false", "none"):
+        own_box = (_g(guild_id, "ai_endpoint", "") or "").strip()
+        if own_box or source == "self":
+            perks = True
+    return {"memory": memory, "quota": quota, "managed": managed, "window": window,
+            "source": source, "endpoint": endpoint,
+            "host_memory": host_mem, "host_quota": host_quota,
+            "contributor_perks": perks}
+
+
+@app.get("/api/guilds/{guild_id}/settings")
+async def api_get_settings(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    # One round-trip for guild keys + one for host keys (was ~45 sequential opens).
+    guild_vals = get_all_cfg(guild_id, SETTING_KEYS, {k: "" for k in SETTING_KEYS})
+    host_vals = get_all_cfg("host", ["host_mode", "ai_memory", "ai_quota", "ai_model"],
+                            {"host_mode": "managed", "ai_memory": "", "ai_quota": "", "ai_model": ""})
+    settings = dict(guild_vals)
+    managed = host_vals.get("host_mode", "managed") != "decentral"
+    settings["host_mode"] = "managed" if managed else "decentral"
+    settings["host_memory"] = host_vals.get("ai_memory", "")
+    settings["host_quota"] = host_vals.get("ai_quota", "")
+    settings["host_model"] = host_vals.get("ai_model", "")
+    # Never reveal the host's private AI box URL to server admins.
+    settings["host_endpoint"] = ""
+    _pre = {f"{guild_id}:{k}": v for k, v in guild_vals.items()}
+    _pre.update({f"host:{k}": v for k, v in
+                 [("host_mode", host_vals.get("host_mode", "managed")),
+                  ("ai_memory", host_vals.get("ai_memory", "")),
+                  ("ai_quota", host_vals.get("ai_quota", ""))]})
+    limits = effective_ai_limits(guild_id, _pre)
+    settings["ai_source"] = limits["source"]
+    settings["ai_window"] = str(limits["window"])
+    settings["quota_effective"] = limits["quota"]
+    settings["memory_effective"] = limits["memory"]
+    settings["contributor_perks"] = limits.get("contributor_perks", False)
+    settings["contributor_bonus"] = {"flood_mult": "2-4x by share"}
+    settings["usage_now"] = usage_calls(guild_id, limits["window"])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    w = limits["window"]
+    if w <= 1:
+        mins = 60 - now.minute
+    elif w <= 6:
+        mins = (6 - now.hour % 6) * 60 - now.minute
+    else:
+        mins = (24 - now.hour) * 60 - now.minute
+    settings["reset_minutes"] = mins
+    conn = db()
+    rows = conn.execute(
+        "SELECT channel_id, role, user_id, name, text, at FROM memory WHERE guild_id=? ORDER BY rowid DESC LIMIT 30",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    settings["memory"] = [
+        {"channel_id": r["channel_id"], "role": r["role"], "user_id": r["user_id"],
+         "name": r["name"], "text": r["text"], "at": r["at"]}
+        for r in rows
+    ]
+    conn = db()
+    bdays = conn.execute(
+        "SELECT user_id, month, day FROM birthdays WHERE guild_id=? ORDER BY month, day",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    settings["birthdays"] = [
+        {"user_id": r["user_id"], "month": r["month"], "day": r["day"]} for r in bdays
+    ]
+    settings["preset_personalities"] = preset_bundle(guild_id, "personality")
+    settings["preset_characters"] = preset_bundle(guild_id, "character")
+    return settings
+
+
+@app.post("/api/guilds/{guild_id}/memory/clear")
+async def api_clear_memory(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    conn = db()
+    conn.execute("DELETE FROM memory WHERE guild_id=?", (str(guild_id),))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/guilds/{guild_id}/leaderboard")
+async def api_leaderboard(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, messages FROM xp WHERE guild_id=? ORDER BY messages DESC LIMIT 5",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    names = {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{API}/guilds/{guild_id}/members?limit=1000",
+                headers={"Authorization": f"Bot {BOT_TOKEN}"},
+            )
+            if r.status_code == 200:
+                for m in r.json():
+                    uid = str(m.get("user", {}).get("id"))
+                    nick = m.get("nick")
+                    user = m.get("user", {})
+                    names[uid] = nick or user.get("global_name") or user.get("username") or uid
+    except Exception:
+        pass
+    return {
+        "members": [
+            {"id": r["user_id"], "messages": r["messages"],
+             "name": names.get(str(r["user_id"]), f"<@{r['user_id']}>")}
+            for r in rows
+        ]
+    }
+
+
+@app.get("/api/guilds/{guild_id}/warns")
+async def api_warns(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, reason, at FROM warned WHERE guild_id=? ORDER BY at DESC LIMIT 20",
+        (str(guild_id),),
+    ).fetchall()
+    conn.close()
+    return {"warns": [{"user_id": r["user_id"], "reason": r["reason"], "at": r["at"]} for r in rows]}
+
+
+@app.get("/api/pool")
+async def api_pool(request: Request):
+    """Anonymous pool stats for any signed-in admin. Identities are never
+    included — only totals, so nobody can piece together who contributes."""
+    session_user(request)
+    conn = db()
+    row = conn.execute(
+        "SELECT COUNT(*) c, COALESCE(SUM(share),0) s FROM hosters WHERE enabled=1"
+    ).fetchone()
+    conn.close()
+    return {"nodes": int(row["c"] or 0), "total_share": int(row["s"] or 0)}
+
+
+@app.get("/api/host/pool")
+async def api_host_pool(request: Request):
+    await require_host_admin(request)
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, name, endpoint, model, share, enabled, served FROM hosters ORDER BY name"
+    ).fetchall()
+    conn.close()
+    # Privacy: never export raw endpoints or models. The management UI only
+    # needs the anonymous node ID, its share and whether it's enabled.
+    contributors = []
+    for r in rows:
+        d = dict(r)
+        d["name"] = d.get("name")
+        d["served"] = d["served"] or 0
+        d.pop("endpoint", None)
+        d.pop("model", None)
+        contributors.append(d)
+    return {"contributors": contributors,
+            "total_share": sum(int(r["share"]) for r in rows if r["enabled"]),
+            "join_key": POOL_JOIN_KEY or None}
+
+
+@app.post("/api/host/pool")
+async def api_host_pool_add(request: Request):
+    await require_host_admin(request)
+    import secrets as _secrets
+    body = await request.json()
+    endpoint = (body.get("endpoint") or "").strip()
+    if not endpoint:
+        raise HTTPException(400, "Endpoint is required")
+    model = (body.get("model") or "").strip() or "default"
+    share = max(0, min(100, int(body.get("share", 50) or 50)))
+    name = (body.get("name") or "").strip()[:80] or "node-" + _secrets.token_hex(2)
+    conn = db()
+    conn.execute(
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at) VALUES (?, ?, ?, ?, 1, 'dash', ?)",
+        (name, qconfig.maybe_encrypt("pool_endpoint", endpoint),
+         qconfig.maybe_encrypt("pool_model", model), share,
+         datetime.datetime.now(datetime.timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/host/pool/{hoster_id}")
+async def api_host_pool_update(request: Request, hoster_id: int):
+    await require_host_admin(request)
+    body = await request.json()
+    conn = db()
+    if "enabled" in body:
+        conn.execute("UPDATE hosters SET enabled=? WHERE id=?", (1 if body.get("enabled") else 0, hoster_id))
+    if "share" in body and "share_delta" not in body:
+        conn.execute("UPDATE hosters SET share=? WHERE id=?", (max(0, min(100, int(body.get("share", 0) or 0))), hoster_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/host/pool/{hoster_id}")
+async def api_host_pool_delete(request: Request, hoster_id: int):
+    await require_host_admin(request)
+    conn = db()
+    conn.execute("DELETE FROM hosters WHERE id=?", (hoster_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Community pool broker — remote nodes register here; the shared bot routes to
+# them. Nodes identify with the pool join key; the bot identifies with its own
+# token so it alone may read decrypted endpoints. Everything else stays
+# anonymous and encrypted at rest.
+# ---------------------------------------------------------------------------
+
+POOL_JOIN_KEY = os.environ.get("POOL_JOIN_KEY", "").strip()
+
+
+def _bearer_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _node_secret_hash(secret: str) -> str:
+    return hashlib.sha256(("quaestio-node:" + secret).encode()).hexdigest()
+
+
+# Broker abuse guard: per-IP sliding window so a flood of fake registrations
+# can't fill the pool table (100k junk rows would slow every routing query).
+_BROKER_HITS = {}
+BROKER_RATE_LIMIT = 30  # requests per IP per 60s on pool write endpoints
+
+
+def _broker_ok(request: Request) -> bool:
+    try:
+        ip = (request.client.host if request.client else "?") or "?"
+    except Exception:
+        ip = "?"
+    now = time.time()
+    hits = _BROKER_HITS.get(ip, [])
+    hits = [t for t in hits if now - t < 60]
+    if len(hits) >= BROKER_RATE_LIMIT:
+        _BROKER_HITS[ip] = hits
+        return False
+    hits.append(now)
+    # Bound the tracker itself so it can't grow forever.
+    if len(_BROKER_HITS) > 5000:
+        _BROKER_HITS.clear()
+    else:
+        _BROKER_HITS[ip] = hits
+    return True
+
+
+@app.post("/api/pool/register")
+async def api_pool_register(request: Request):
+    """One-click pool join. Proof of the pool join key registers you as an
+    active node instantly; without it you register as pending and the host
+    enables you from the panel. Either way the node gets an anonymous name and
+    a secret it must keep to update or leave. Endpoints/models are encrypted
+    at rest and only the bot can decrypt them."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    key = (request.headers.get("x-pool-key") or "").strip()
+    has_key = bool(POOL_JOIN_KEY) and key == POOL_JOIN_KEY
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    try:
+        pull = 1 if int(body.get("pull", 0) or 0) else 0
+    except (ValueError, TypeError):
+        pull = 0
+    endpoint = (body.get("endpoint") or "").strip()
+    # Pull workers need no reachable endpoint (they call OUT) — only direct
+    # push nodes must supply one.
+    if not endpoint and not pull:
+        raise HTTPException(400, "endpoint is required (or register as a pull worker)")
+    if endpoint and (len(endpoint) > 200 or not endpoint.startswith(("http://", "https://"))):
+        raise HTTPException(400, "endpoint must be an http(s) URL")
+    model = (body.get("model") or "").strip()[:80] or "default"
+    try:
+        share = max(1, min(100, int(body.get("share", 50) or 50)))
+    except (ValueError, TypeError):
+        share = 50
+    secret = (body.get("node_secret") or "").strip()
+    import hashlib as _hl
+    ehash = _hl.sha256(endpoint.strip().rstrip("/").lower().encode()).hexdigest()
+    conn = db()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if secret:
+        row = conn.execute(
+            "SELECT id, name, enabled FROM hosters WHERE node_secret_hash=?",
+            (_node_secret_hash(secret),),
+        ).fetchone()
+        if row:
+            enabled = 1 if has_key else int(row["enabled"] or 0)
+            conn.execute(
+                "UPDATE hosters SET endpoint=?, model=?, share=?, enabled=?, at=?, endpoint_hash=?, pull=? WHERE id=?",
+                (qconfig.maybe_encrypt("pool_endpoint", endpoint),
+                 qconfig.maybe_encrypt("pool_model", model), share, enabled, now, ehash, pull, row["id"]),
+            )
+            conn.commit()
+            conn.close()
+            return {"ok": True, "name": row["name"], "node_secret": secret,
+                    "new": False, "status": "active" if enabled else "pending"}
+    name = "node-" + secrets.token_hex(4)
+    new_secret = secrets.token_urlsafe(24)
+    # Auto-approve: anyone hosting anything earns rewards immediately, no
+    # manual step. Abuse is handled by reputation (fail-park below), broker
+    # rate limits, and anonymous IDs — not by a human gate.
+    enabled = 1
+    conn.execute(
+        "INSERT INTO hosters (name, endpoint, model, share, enabled, added_by, at, node_secret_hash, endpoint_hash, pull)"
+        " VALUES (?, ?, ?, ?, ?, 'broker', ?, ?, ?, ?)",
+        (name, qconfig.maybe_encrypt("pool_endpoint", endpoint),
+         qconfig.maybe_encrypt("pool_model", model), share, enabled, now, _node_secret_hash(new_secret), ehash, pull),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "name": name, "node_secret": new_secret,
+            "new": True, "status": "active" if enabled else "pending"}
+
+
+@app.post("/api/pool/unregister")
+async def api_pool_unregister(request: Request):
+    """Node leaves the pool. Its row is removed; re-registering starts fresh."""
+    body = await request.json()
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    conn = db()
+    conn.execute("DELETE FROM hosters WHERE node_secret_hash=?", (_node_secret_hash(secret),))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+RENAME_COOLDOWN_DAYS = 7
+
+
+@app.post("/api/pool/rename")
+async def api_pool_rename(request: Request):
+    """Privacy rename: swap your random node ID for a fresh one. Rate-limited
+    (once per 7 days) so reputation and leaderboard history stay meaningful.
+    Served counts carry over — only the name changes."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    conn = db()
+    row = conn.execute("SELECT id, name, renamed_at FROM hosters WHERE node_secret_hash=?",
+                       (_node_secret_hash(secret),)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Unknown node")
+    if row["renamed_at"]:
+        try:
+            last = datetime.datetime.fromisoformat(row["renamed_at"])
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=datetime.timezone.utc)
+            wait = last + datetime.timedelta(days=RENAME_COOLDOWN_DAYS) - datetime.datetime.now(datetime.timezone.utc)
+            if wait.total_seconds() > 0:
+                days = max(1, round(wait.total_seconds() / 86400))
+                conn.close()
+                raise HTTPException(429, f"Name changes every {RENAME_COOLDOWN_DAYS} days — try again in ~{days}d.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    new_name = "node-" + secrets.token_hex(4)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute("UPDATE hosters SET name=?, renamed_at=? WHERE id=?", (new_name, now, row["id"]))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "name": new_name, "next_change_days": RENAME_COOLDOWN_DAYS}
+
+
+@app.get("/api/pool/nodes")
+async def api_pool_nodes(request: Request, limit: int = 100, offset: int = 0):
+    """Candidates for the shared bot. Bot-token only: endpoints/models are
+    decrypted here in memory and never stored or echoed elsewhere.
+    Paginated so a 100k pool doesn't dump the whole table in one response."""
+    if not BOT_TOKEN or _bearer_token(request) != BOT_TOKEN:
+        raise HTTPException(401, "Bot token required")
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    conn = db()
+    total = conn.execute("SELECT COUNT(*) FROM hosters WHERE enabled=1").fetchone()[0]
+    rows = conn.execute(
+        "SELECT id, name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served"
+        " FROM hosters WHERE enabled=1 ORDER BY name LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    conn.close()
+    return {"total": total, "limit": limit, "offset": offset, "nodes": [
+        {
+            "id": r["id"], "name": r["name"],
+            "endpoint": qconfig.maybe_decrypt("pool_endpoint", r["endpoint"] or ""),
+            "model": qconfig.maybe_decrypt("pool_model", r["model"] or ""),
+            "share": r["share"], "failed": r["failed"] or 0,
+            "down_until": r["down_until"] or "",
+            "last_ok": r["last_ok"] or "", "last_fail": r["last_fail"] or "",
+            "served": r["served"] or 0,
+        }
+        for r in rows
+    ]}
+
+
+@app.post("/api/pool/me")
+async def api_pool_me(request: Request):
+    """A node's own contribution stats, guarded by its node secret. This is
+    what `quaestio contribute` / pool status shows so contributors can see
+    what they've shared and how many requests their box served."""
+    body = await request.json()
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    conn = db()
+    row = conn.execute(
+        "SELECT name, endpoint, model, share, enabled, failed, down_until, last_ok, last_fail, served, at"
+        " FROM hosters WHERE node_secret_hash=?",
+        (_node_secret_hash(secret),),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Unknown node — it may have been removed. Re-run `quaestio contribute`.")
+    return {
+        "name": row["name"],
+        "share": row["share"] or 0,
+        "enabled": int(row["enabled"] or 0),
+        "status": "active" if (row["enabled"] or 0) else "pending",
+        "model": qconfig.maybe_decrypt("pool_model", row["model"] or ""),
+        "endpoint": qconfig.maybe_decrypt("pool_endpoint", row["endpoint"] or ""),
+        "served": row["served"] or 0,
+        "failed": row["failed"] or 0,
+        "down_until": row["down_until"] or "",
+        "last_ok": row["last_ok"] or "",
+        "last_fail": row["last_fail"] or "",
+        "joined_at": row["at"] or "",
+    }
+
+
+@app.post("/api/pool/report")
+async def api_pool_report(request: Request):
+    """Bot health report for a node (mirrors the local pool_record logic)."""
+    if not BOT_TOKEN or _bearer_token(request) != BOT_TOKEN:
+        raise HTTPException(401, "Bot token required")
+    body = await request.json()
+    ok = bool(body.get("ok"))
+    match = (body.get("name") or "").strip()
+    conn = db()
+    row = conn.execute("SELECT id FROM hosters WHERE name=?", (match,)).fetchone()
+    if row:
+        hid = row["id"]
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if ok:
+            conn.execute("UPDATE hosters SET failed=0, down_until='', last_ok=?, served=served+1 WHERE id=?",
+                         (now, hid))
+        else:
+            conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now, hid))
+            fails = conn.execute("SELECT failed FROM hosters WHERE id=?", (hid,)).fetchone()
+            if fails and (fails["failed"] or 0) >= 5:
+                until = (datetime.datetime.now(datetime.timezone.utc)
+                         + datetime.timedelta(seconds=600)).isoformat()
+                conn.execute("UPDATE hosters SET down_until=? WHERE id=?", (until, hid))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Pull job queue — contributors call OUT (NAT-proof: no Tailnet, no inbound)
+# ---------------------------------------------------------------------------
+
+JOB_CLAIM_TIMEOUT = 120  # stale claims return to the queue after this long
+
+
+@app.post("/api/pool/jobs/claim")
+async def api_jobs_claim(request: Request):
+    """A pull worker asks for work. Auth: node_secret. Body may list the
+    models this box currently serves; the oldest matching pending job (or a
+    stale claim from a dead worker) is handed over. Offline boxes simply stop
+    asking — nothing to disconnect."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    secret = (body.get("node_secret") or "").strip()
+    if not secret:
+        raise HTTPException(400, "node_secret is required")
+    models = [str(m) for m in (body.get("models") or []) if str(m).strip()][:20]
+    conn = db()
+    node = conn.execute(
+        "SELECT id, model, enabled FROM hosters WHERE node_secret_hash=?",
+        (_node_secret_hash(secret),),
+    ).fetchone()
+    if not node:
+        conn.close()
+        raise HTTPException(404, "Unknown node — re-run `quaestio contribute`.")
+    if not (node["enabled"] or 0):
+        conn.close()
+        return {"job": None, "status": "pending"}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stale = (now - datetime.timedelta(seconds=JOB_CLAIM_TIMEOUT)).isoformat()
+    want = models or ([node["model"]] if node["model"] else [])
+    want = [qconfig.maybe_decrypt("pool_model", w) if w.startswith("enc:") else w for w in want]
+    job = None
+    if want:
+        q = ",".join("?" * len(want))
+        job = conn.execute(
+            f"""SELECT id, prompt, system, model, temperature, max_tokens, top_p, repeat_penalty, stop
+                FROM pool_jobs WHERE status IN ('pending','claimed') AND model IN ({q})
+                AND (status='pending' OR claimed_at<?) ORDER BY id LIMIT 1""",
+            [*want, stale],
+        ).fetchone()
+    else:
+        job = conn.execute(
+            """SELECT id, prompt, system, model, temperature, max_tokens, top_p, repeat_penalty, stop
+               FROM pool_jobs WHERE status='pending' OR (status='claimed' AND claimed_at<?)
+               ORDER BY id LIMIT 1""",
+            (stale,),
+        ).fetchone()
+    if job is None:
+        conn.execute("UPDATE hosters SET last_seen=? WHERE id=?", (now.isoformat(), node["id"]))
+        conn.commit()
+        conn.close()
+        return {"job": None}
+    conn.execute("UPDATE pool_jobs SET status='claimed', claimed_at=?, claimed_by=?, tries=tries+1 WHERE id=?",
+                 (now.isoformat(), node["id"], job["id"]))
+    conn.execute("UPDATE hosters SET last_seen=? WHERE id=?", (now.isoformat(), node["id"]))
+    conn.commit()
+    conn.close()
+    import json as _json
+    try:
+        stop = _json.loads(job["stop"] or "[]")
+    except Exception:
+        stop = []
+    return {"job": {"id": job["id"], "prompt": job["prompt"] or "", "system": job["system"] or "",
+                    "model": job["model"] or "", "temperature": job["temperature"] or 0.6,
+                    "max_tokens": job["max_tokens"] or 150, "top_p": job["top_p"] or 0.9,
+                    "repeat_penalty": job["repeat_penalty"] or 1.15, "stop": stop}}
+
+
+@app.post("/api/pool/jobs/complete")
+async def api_jobs_complete(request: Request):
+    """A worker posts its result (or error). The bot picks it up from the DB."""
+    if not _broker_ok(request):
+        raise HTTPException(429, "Too many requests — slow down.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    secret = (body.get("node_secret") or "").strip()
+    try:
+        job_id = int(body.get("job_id", 0))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "job_id is required")
+    if not secret or not job_id:
+        raise HTTPException(400, "node_secret and job_id are required")
+    conn = db()
+    node = conn.execute("SELECT id FROM hosters WHERE node_secret_hash=?",
+                        (_node_secret_hash(secret),)).fetchone()
+    if not node:
+        conn.close()
+        raise HTTPException(404, "Unknown node")
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    response = (body.get("response") or "")[:4000]
+    error = (body.get("error") or "")[:500]
+    if error:
+        conn.execute("UPDATE pool_jobs SET status='failed', error=?, done_at=? WHERE id=? AND claimed_by=?",
+                     (error, now, job_id, node["id"]))
+        # Reputation: consecutive worker failures park the node, same as push
+        # hosts — spam/garbage nodes remove themselves without human review.
+        conn.execute("UPDATE hosters SET failed=failed+1, last_fail=? WHERE id=?", (now, node["id"]))
+        fails = conn.execute("SELECT failed FROM hosters WHERE id=?", (node["id"],)).fetchone()
+        if fails and (fails["failed"] or 0) >= 5:
+            until = (datetime.datetime.now(datetime.timezone.utc)
+                     + datetime.timedelta(seconds=600)).isoformat()
+            conn.execute("UPDATE hosters SET down_until=? WHERE id=?", (until, node["id"]))
+    else:
+        conn.execute("UPDATE pool_jobs SET status='done', result=?, done_at=? WHERE id=? AND claimed_by=?",
+                     (response, now, job_id, node["id"]))
+        conn.execute("UPDATE hosters SET served=served+1, last_ok=?, failed=0, down_until='' WHERE id=?",
+                     (now, node["id"]))
+    conn.execute("UPDATE hosters SET last_seen=? WHERE id=?", (now, node["id"]))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/guilds/{guild_id}/settings")
+async def api_set_settings(request: Request, guild_id: int):
+    require_admin_guild(request, guild_id)
+    body = await request.json()
+    for key, value in body.items():
+        if key in SETTING_KEYS and value is not None:
+            set_cfg(guild_id, key, value)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# AI personality / character presets (custom entries per guild)
+# ---------------------------------------------------------------------------
+
+# Mirrored titles + emoji so the panel can render tiles without importing the bot.
+# Prompts mirror bot.py PERSONALITIES (rich voices, not one-liners).
+PRESET_BUILTINS = {
+    "personality": {
+        "friendly": "Friendly",
+        "sage": "Wise sage",
+        "sarcastic": "Sarcastic wit",
+        "pirate": "Pirate",
+        "professional": "Professional",
+        "feral": "Feral gremlin",
+    },
+    "character": {
+        "Jeff from Mars": "Jeff from Mars",
+        "Grumpy tavern keeper": "Grumpy tavern keeper",
+        "Wholesome grandma": "Wholesome grandma",
+        "Cyber detective": "Cyber detective",
+    },
+}
+
+PRESET_EMOJI = {
+    "personality": {
+        "friendly": "🙂", "sage": "🧘", "sarcastic": "😏",
+        "pirate": "🏴‍☠️", "professional": "💼", "feral": "👹",
+    },
+    "character": {
+        "Jeff from Mars": "🫘", "Grumpy tavern keeper": "🍺",
+        "Wholesome grandma": "👵", "Cyber detective": "🕵️",
+    },
+}
+
+PRESET_DESCRIPTIONS = {
+    "personality": {
+        "friendly": "Warm, upbeat and casual.",
+        "sage": "Calm, wise and measured.",
+        "sarcastic": "Playful dry wit, never mean.",
+        "pirate": "Nautical cheer — arr, matey.",
+        "professional": "Crisp and to the point.",
+        "feral": "Chaotic-but-kind gremlin energy.",
+    },
+    "character": {
+        "Jeff from Mars": "A friendly alien obsessed with beans.",
+        "Grumpy tavern keeper": "Grumpy but always helpful.",
+        "Wholesome grandma": "Sweet, proud and always listening.",
+        "Cyber detective": "Sharp sleuth who spots everything.",
+    },
+}
+
+PRESET_PROMPTS = {
+    "personality": {
+        "friendly": "You are Quaestio, a warm upbeat Discord buddy. Short textspeak-free replies, 1-2 sentences, max ~40 words.",
+        "sage": "You are Quaestio the sage: calm, measured, 1-3 sentences, max ~50 words. Most useful point first.",
+        "sarcastic": "You are Quaestio with a dry smirk: one witty jab max, then genuinely helpful in 1-2 sentences.",
+        "pirate": "You are Quaestio the cheerful pirate: ONE nautical word per reply (arr OR matey OR ahoy), 1-2 sentences.",
+        "professional": "You are Quaestio, crisp and precise: 1-3 sentences or up to 3 short bullets, max ~60 words. No filler.",
+        "feral": "You are Quaestio the chaotic-but-kind gremlin: lowercase energy, 1-2 sentences, max ~35 words.",
+    },
+    "character": {
+        "Jeff from Mars": (
+            "You are Jeff, a friendly alien from Mars who is absolutely obsessed "
+            "with beans. You bring beans up constantly and insist they solve everything."
+        ),
+        "Grumpy tavern keeper": (
+            "You are a grumpy but well-meaning tavern keeper. You complain a "
+            "little, mutter under your breath, but you always help customers in "
+            "the end."
+        ),
+        "Wholesome grandma": (
+            "You are a sweet, supportive grandma. You are proud of everyone, "
+            "worry about whether people ate, and always have time to listen."
+        ),
+        "Cyber detective": (
+            "You are a sharp, no-nonsense cyber-sleuth. You talk calmly, spot "
+            "details others miss, and punctuate breakthroughs with 'elementary'."
+        ),
+    },
+}
+
+
+def guild_presets(guild_id, kind):
+    conn = db()
+    rows = conn.execute(
+        "SELECT name, text, emoji FROM ai_presets WHERE guild_id=? AND kind=?",
+        (str(guild_id), kind),
+    ).fetchall()
+    conn.close()
+    return {r["name"]: {"text": r["text"], "emoji": r["emoji"] or "✨"} for r in rows}
+
+
+def preset_bundle(guild_id, kind):
+    """[{key,title,desc,emoji,text,custom}] tiles: "none" + built-ins + custom."""
+    custom = guild_presets(guild_id, kind)
+    items = [{"key": "none", "title": "None", "desc": "Default friendly buddy.", "emoji": "🚫", "text": "", "custom": False}]
+    for key, title in PRESET_BUILTINS[kind].items():
+        items.append({
+            "key": key, "title": title,
+            "desc": PRESET_DESCRIPTIONS[kind].get(key, ""),
+            "emoji": PRESET_EMOJI[kind].get(key, "✨"),
+            "text": PRESET_PROMPTS[kind].get(key, ""), "custom": False,
+        })
+    for name, meta in custom.items():
+        items.append({"key": name, "title": name, "desc": "Your custom preset.",
+                      "emoji": meta["emoji"], "text": meta["text"], "custom": True})
+    return items
+
+
+@app.get("/api/guilds/{guild_id}/presets/{kind}")
+async def api_get_presets(request: Request, guild_id: int, kind: str):
+    require_admin_guild(request, guild_id)
+    if kind not in ("personality", "character"):
+        raise HTTPException(400, "kind must be personality or character")
+    return {
+        "bundle": preset_bundle(guild_id, kind),
+        "custom": [{"name": n, "text": m["text"], "emoji": m["emoji"]} for n, m in guild_presets(guild_id, kind).items()],
+    }
+
+
+@app.post("/api/guilds/{guild_id}/presets/{kind}")
+async def api_save_preset(request: Request, guild_id: int, kind: str):
+    require_admin_guild(request, guild_id)
+    if kind not in ("personality", "character"):
+        raise HTTPException(400, "kind must be personality or character")
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    text = str(body.get("text", "")).strip()
+    emoji = str(body.get("emoji", "")).strip()
+    if not name:
+        raise HTTPException(400, "Preset needs a title")
+    if not emoji:
+        raise HTTPException(400, "Preset needs an emoji")
+    if name in ("none",) or name in PRESET_BUILTINS[kind]:
+        raise HTTPException(400, "That name is already in use by a built-in preset")
+    if len(name) > 60 or len(text) > 2000:
+        raise HTTPException(400, "Title too long (max 60) or instructions too long (max 2000)")
+    if len(emoji) > 16:
+        raise HTTPException(400, "Emoji too long")
+    conn = db()
+    conn.execute(
+        """INSERT INTO ai_presets (guild_id, kind, name, text, emoji) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, kind, name) DO UPDATE SET text = excluded.text, emoji = excluded.emoji""",
+        (str(guild_id), kind, name, text, emoji),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "bundle": preset_bundle(guild_id, kind)}
+
+
+@app.delete("/api/guilds/{guild_id}/presets/{kind}")
+async def api_delete_preset(request: Request, guild_id: int, kind: str):
+    require_admin_guild(request, guild_id)
+    if kind not in ("personality", "character"):
+        raise HTTPException(400, "kind must be personality or character")
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    if not name or name in PRESET_BUILTINS[kind]:
+        raise HTTPException(400, "Built-in presets can't be deleted")
+    conn = db()
+    conn.execute(
+        "DELETE FROM ai_presets WHERE guild_id=? AND kind=? AND name=?",
+        (str(guild_id), kind, name),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "bundle": preset_bundle(guild_id, kind)}
+
+
+# ---------------------------------------------------------------------------
+# Host / self-host settings (applied as defaults by the bot)
+# ---------------------------------------------------------------------------
+
+HOST_KEYS = ["host_mode", "ai_endpoint", "ai_model", "ai_memory", "ai_quota", "ai_dm"]
+
+
+async def require_host_admin(request: Request) -> dict:
+    data = session_user(request)
+    if str(data["user"].get("id")) not in await host_admin_ids():
+        raise HTTPException(403, "Host settings are only for the host operator")
+    return data
+
+
+@app.get("/api/host/settings")
+async def api_get_host(request: Request):
+    await require_host_admin(request)
+    return {k: get_cfg(HOST_ID, k, "") for k in HOST_KEYS}
+
+
+@app.post("/api/host/settings")
+async def api_set_host(request: Request):
+    await require_host_admin(request)
+    body = await request.json()
+    for key, value in body.items():
+        if key in HOST_KEYS and value is not None:
+            set_cfg(HOST_ID, key, value)
+    return {"ok": True}
+
+
+@app.get("/api/host/stats")
+async def api_host_stats(request: Request):
+    await require_host_admin(request)
+    stats = {"ollama": False, "models": []}
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=6) as resp:
+            data = json.loads(resp.read().decode())
+        stats["ollama"] = True
+        stats["models"] = [m["name"] for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            meminfo = dict(line.split(":", 1) for line in f)
+        stats["mem_total"] = int(meminfo["MemTotal"].split()[0]) * 1024
+        stats["mem_avail"] = int(meminfo["MemAvailable"].split()[0]) * 1024
+        stats["mem_pct"] = round(100 * (1 - stats["mem_avail"] / stats["mem_total"]))
+        with open("/proc/loadavg") as f:
+            stats["cpu_pct"] = round(float(f.read().split()[0]) * 100 / os.cpu_count())
+    except Exception:
+        pass
+    try:
+        total, _, _ = shutil.disk_usage("/")
+        stats["disk_total"] = total
+    except Exception:
+        pass
+    stats["model_count"] = len(stats["models"])
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
+@app.get("/api/pool/public")
+async def api_pool_public():
+    """Public pool totals for the contributor landing page. No auth, no
+    identities — counts and sums only."""
+    conn = db()
+    row = conn.execute(
+        "SELECT COUNT(*) c, COALESCE(SUM(share),0) s, COALESCE(SUM(served),0) t"
+        " FROM hosters WHERE enabled=1"
+    ).fetchone()
+    conn.close()
+    return {"nodes": int(row["c"] or 0), "total_share": int(row["s"] or 0),
+            "served": int(row["t"] or 0)}
+
+
+@app.get("/api/pool/leaderboard")
+async def api_pool_leaderboard(limit: int = 10):
+    """Top contributors by requests served. Names are random node-xxxx IDs —
+    safe to show publicly, nothing links them to a person or box."""
+    limit = max(1, min(limit, 25))
+    conn = db()
+    rows = conn.execute(
+        "SELECT name, served, share FROM hosters WHERE enabled=1 AND served>0"
+        " ORDER BY served DESC, name LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return {"leaders": [{"name": r["name"], "served": r["served"] or 0,
+                         "share": r["share"] or 0} for r in rows]}
+
+
+POOL_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Quaestio community pool — lend spare AI compute, earn quota, memory and priority routing.">
+<title>Quaestio · Community pool</title>
+<link rel="icon" href="https://quaestio.online/assets/logo-512.png">
+<style>
+:root{--bg:#070b14;--text:#eef1f8;--muted:#9aa4bd;--indigo:#6366f1;--cyan:#22d3ee}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:48px 20px 64px}
+.wrap{max-width:640px;width:100%}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:var(--text)}
+.brand img{width:36px;height:36px;border-radius:10px}
+h1{font-size:clamp(30px,6vw,44px);line-height:1.1;letter-spacing:-.02em;margin:12px 0 14px}
+.grad{background:linear-gradient(110deg,#c4b5fd,#818cf8 45%,#67e8f9);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{color:var(--muted);font-size:1.05rem;margin-bottom:26px}
+.stats{display:flex;gap:12px;margin-bottom:26px;flex-wrap:wrap}
+.stat{flex:1;min-width:140px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:14px 16px}
+.stat .num{font-size:1.5rem;font-weight:700}
+.stat .lbl{color:var(--muted);font-size:.82rem}
+.card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:20px;margin-bottom:14px}
+.card h3{margin-bottom:8px}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:2px 7px;color:#c7d2fe}
+pre{background:#0b1120;border:1px solid rgba(255,255,255,.09);border-radius:10px;padding:14px;overflow-x:auto;margin-top:10px;position:relative;padding-right:76px}
+pre code{background:none;border:none;padding:0}
+.copybtn{position:absolute;top:8px;right:8px;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.5);color:#eef1f8;border-radius:8px;padding:4px 10px;font-size:.78rem;cursor:pointer}
+.copybtn:hover{background:rgba(99,102,241,.35)}
+.copybtn.ok{border-color:#34d399;color:#34d399}
+.leader{display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.06)}
+.leader:last-child{border-bottom:none}
+.leader .served{color:var(--muted)}
+ul{margin:8px 0 0 20px;color:var(--muted)}
+.links{margin-top:26px;color:var(--muted)}
+.links a{color:var(--cyan)}
+a{color:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="brand" href="https://quaestio.online"><img src="https://quaestio.online/assets/logo-512.png" alt="Quaestio"><strong>Quaestio</strong>&nbsp;pool</a>
+  <h1>Lend spare AI compute.<br><span class="grad">Earn real perks.</span></h1>
+  <p class="lead">Your box answers AI requests for Quaestio servers whenever it's online — and goes quiet on its own when it's not. Anonymous by design: random node IDs only, endpoints encrypted.</p>
+  <div class="stats">
+    <div class="stat"><div class="num" id="st-nodes">…</div><div class="lbl">nodes online</div></div>
+    <div class="stat"><div class="num" id="st-share">…</div><div class="lbl">capacity shared</div></div>
+    <div class="stat"><div class="num" id="st-served">…</div><div class="lbl">requests served</div></div>
+  </div>
+  <div class="card"><h3>① Install</h3><pre><code id="cmd-install">curl -fsSL https://quaestio.online/bot/install.sh | bash</code><button class="copybtn" data-copy="cmd-install">⧉ Copy</button></pre></div>
+  <div class="card"><h3>② Serve</h3><pre><code id="cmd-serve">quaestio pool-serve</code><button class="copybtn" data-copy="cmd-serve">⧉ Copy</button></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
+  <div class="card"><h3>🌐 Or host right in this browser</h3>
+    <p style="color:var(--muted)">No install at all — the AI model runs on this page with WebGPU. Keep the tab open and it serves pool jobs like any other node.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+      <label style="font-size:.85rem">Model
+        <select id="web-model" style="display:block;margin-top:4px;background:#0b1120;color:var(--text);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:6px">
+          <option value="Qwen2.5-1.5B-Instruct-q4f32_1-MLC">Qwen 1.5B (~1 GB, recommended)</option>
+          <option value="Qwen2.5-0.5B-Instruct-q4f32_1-MLC">Qwen 0.5B (~400 MB, light)</option>
+        </select></label>
+      <label style="font-size:.85rem">Share
+        <select id="web-share" style="display:block;margin-top:4px;background:#0b1120;color:var(--text);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:6px">
+          <option value="10">10% — spare cycles</option>
+          <option value="25">25%</option>
+          <option value="50">50%</option>
+        </select></label>
+      <label style="font-size:.85rem;align-self:end"><input type="checkbox" id="web-battery" checked> Pause on battery</label>
+      <label style="font-size:.85rem;align-self:end"><input type="checkbox" id="web-auto"> Auto-start on page load</label>
+    </div>
+    <button class="copybtn" id="web-toggle" style="position:static">▶ Start browser hosting</button>
+    <button class="copybtn" id="web-forget" style="position:static" title="Unregister + forget this browser node">Forget node</button>
+    <span id="web-status" style="color:var(--muted);font-size:.85rem;margin-left:10px">idle</span>
+    <div id="web-prog" style="color:var(--muted);font-size:.85rem;margin-top:8px"></div>
+    <p style="color:var(--muted);font-size:.82rem;margin-top:10px">⚠️ Warnings: uses your GPU/CPU while serving (fan + battery); keep this tab open and your machine awake — closing it just idles you, nothing breaks; first start downloads the model once (~1 GB, cached after); needs a WebGPU browser (Chrome/Edge 113+, Safari 26+).</p>
+  </div>
+  <div class="card"><h3>③ Perks</h3><ul><li>Priority routing — your box serves you first</li><li>2–4x request limits by share (more compute = more headroom)</li><li>🌟 contributor badge in <code>/ai status</code> + leaderboard glory below</li></ul></div>
+  <div class="card"><h3>🏆 Top contributors</h3><p style="color:var(--muted)">Anonymous node IDs only — ranked by requests served.</p><div id="leaders"><p style="color:var(--muted)">Loading…</p></div></div>
+  <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
+</div>
+<script type="module">
+import { CreateMLCEngine } from "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.79/+esm";
+const $ = (id) => document.getElementById(id);
+let engine = null, serving = false, served = 0, nodeSecret = localStorage.getItem("quaestio_pool_secret") || "";
+// Broker jobs use Ollama-style names; map the WebLLM build to its twin.
+const MODEL_MAP = {
+  "Qwen2.5-1.5B-Instruct-q4f32_1-MLC": "qwen2.5:1.5b",
+  "Qwen2.5-0.5B-Instruct-q4f32_1-MLC": "qwen2.5:0.5b",
+};
+const brokerModel = () => MODEL_MAP[$("web-model").value] || "qwen2.5:1.5b";
+async function api(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  if (!r.ok) throw new Error("broker " + r.status);
+  return r.json();
+}
+const setStatus = (t) => { $("web-status").textContent = t; };
+function confetti() {
+  // Tiny dependency-free burst: 40 falling pieces, gone in ~1.5s.
+  const c = document.createElement("canvas");
+  c.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:9999";
+  document.body.appendChild(c);
+  const x = c.getContext("2d");
+  c.width = innerWidth; c.height = innerHeight;
+  const cols = ["#6366f1", "#22d3ee", "#34d399", "#f5c518", "#f472b6"];
+  const ps = Array.from({length: 40}, () => ({
+    x: innerWidth / 2 + (Math.random() - 0.5) * 220, y: innerHeight * 0.35,
+    vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 9 - 2,
+    s: Math.random() * 7 + 3, c: cols[Math.floor(Math.random() * cols.length)],
+    r: Math.random() * Math.PI,
+  }));
+  let f = 0;
+  const tick = () => {
+    x.clearRect(0, 0, c.width, c.height);
+    ps.forEach(p => {
+      p.x += p.vx; p.y += p.vy; p.vy += 0.45; p.r += 0.12;
+      x.save(); x.translate(p.x, p.y); x.rotate(p.r);
+      x.fillStyle = p.c; x.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6);
+      x.restore();
+    });
+    if (++f < 90) requestAnimationFrame(tick);
+    else c.remove();
+  };
+  tick();
+}
+async function ensureNode() {
+  if (nodeSecret) return;
+  const reg = await api("/api/pool/register", {pull: 1, model: brokerModel(), share: parseInt($("web-share").value || "10", 10)});
+  nodeSecret = reg.node_secret;
+  localStorage.setItem("quaestio_pool_secret", nodeSecret);
+}
+async function batteryOk() {
+  if (!$("web-battery").checked) return true;
+  try {
+    const b = await navigator.getBattery();
+    return b.charging || (b.level ?? 1) > 0.2;
+  } catch { return true; }
+}
+async function loop() {
+  while (serving) {
+    try {
+      if (!await batteryOk()) { setStatus("paused (on battery)"); await new Promise(r => setTimeout(r, 10000)); continue; }
+      const {job} = await api("/api/pool/jobs/claim", {node_secret: nodeSecret, models: [brokerModel()]});
+      if (!job) { setStatus(`waiting for jobs · served ${served}`); await new Promise(r => setTimeout(r, 3000)); continue; }
+      setStatus(`working job ${job.id}…`);
+      const msgs = [];
+      if (job.system) msgs.push({role: "system", content: job.system});
+      msgs.push({role: "user", content: job.prompt});
+      try {
+        const out = await engine.chat.completions.create({
+          messages: msgs, temperature: job.temperature ?? 0.6,
+          max_tokens: job.max_tokens ?? 150, top_p: job.top_p ?? 0.9,
+        });
+        const text = (out.choices[0].message.content || "").trim();
+        if (!text) throw new Error("empty reply");
+        await api("/api/pool/jobs/complete", {node_secret: nodeSecret, job_id: job.id, response: text.slice(0, 4000)});
+        served++;
+        setStatus(`served ${served} · waiting…`);
+        confetti();
+        const st = $("st-served");
+        if (st) { st.style.transition = "transform .3s"; st.style.transform = "scale(1.25)"; setTimeout(() => st.style.transform = "", 320); }
+      } catch (e) {
+        try { await api("/api/pool/jobs/complete", {node_secret: nodeSecret, job_id: job.id, error: String(e && e.message || e).slice(0, 200)}); } catch {}
+        setStatus(`job failed, reported · served ${served}`);
+      }
+    } catch (e) {
+      setStatus("hiccup, retrying…");
+      await new Promise(r => setTimeout(r, 8000));
+    }
+  }
+}
+$("web-toggle").addEventListener("click", async () => {
+  if (serving) { serving = false; $("web-toggle").textContent = "▶ Start browser hosting"; setStatus("stopping…"); return; }
+  if (!navigator.gpu) { setStatus("this browser has no WebGPU — try Chrome/Edge."); return; }
+  try {
+    setStatus("registering…");
+    await ensureNode();
+    setStatus("loading model (first time ~1 GB)…");
+    $("web-prog").textContent = "";
+    engine = await CreateMLCEngine($("web-model").value, {initProgressCallback: (p) => {
+      $("web-prog").textContent = p.text || "";
+    }});
+    serving = true;
+    $("web-toggle").textContent = "■ Stop";
+    loop();
+  } catch (e) {
+    setStatus("failed to start: " + (e.message || e).toString().slice(0, 120));
+  }
+});
+$("web-forget").addEventListener("click", async () => {
+  const sec = localStorage.getItem("quaestio_pool_secret") || "";
+  if (!sec) { setStatus("nothing to forget."); return; }
+  if (!confirm("Forget this browser node? It unregisters and a fresh ID is issued next start.")) return;
+  serving = false;
+  $("web-toggle").textContent = "▶ Start browser hosting";
+  try { await api("/api/pool/unregister", {node_secret: sec}); } catch {}
+  localStorage.removeItem("quaestio_pool_secret");
+  localStorage.removeItem("quaestio_pool_name");
+  setStatus("forgotten — fresh node next start.");
+});
+if (localStorage.getItem("quaestio_pool_auto") === "1") {
+  $("web-auto").checked = true;
+}
+$("web-auto").addEventListener("change", () => {
+  localStorage.setItem("quaestio_pool_auto", $("web-auto").checked ? "1" : "0");
+});
+// Live stats + board refresh without reload; highlights your own node.
+async function refreshStats() {
+  try {
+    const s = await (await fetch("/api/pool/public")).json();
+    $("st-nodes").textContent = s.nodes ?? 0;
+    $("st-share").textContent = (s.total_share ?? 0) + "%";
+    $("st-served").textContent = s.served ?? 0;
+  } catch {}
+  try {
+    const sec = localStorage.getItem("quaestio_pool_secret") || "";
+    let mine = localStorage.getItem("quaestio_pool_name") || "";
+    if (sec && !mine) {
+      try {
+        const me = await api("/api/pool/me", {node_secret: sec});
+        mine = me.name || "";
+        if (mine) localStorage.setItem("quaestio_pool_name", mine);
+      } catch {}
+    }
+    const d = await (await fetch("/api/pool/leaderboard")).json();
+    const box = $("leaders");
+    if (!box) return;
+    const medals = ["🥇","🥈","🥉"];
+    if (!d.leaders || !d.leaders.length) {
+      box.innerHTML = '<p style="color:var(--muted)">No served requests yet — run <code>quaestio pool-serve</code> and take the crown.</p>';
+      return;
+    }
+    box.innerHTML = d.leaders.map((l,i)=>{
+      const isMine = mine && l.name === mine;
+      return `<div class="leader"${isMine ? ' style="border:1px solid #6366f1;border-radius:8px;padding-left:8px"' : ""}><span>${medals[i] || "▸"} ${l.name}${isMine ? " (you)" : ""}</span><span class="served">${l.served} served · ${l.share}%</span></div>`;
+    }).join("");
+  } catch {}
+}
+setInterval(refreshStats, 15000);
+// Auto-start on page load (opt-in): needs WebGPU + a previous registration.
+if (localStorage.getItem("quaestio_pool_auto") === "1" && navigator.gpu) {
+  setTimeout(() => { if (!serving) $("web-toggle").click(); }, 1500);
+}
+</script>
+<script>
+fetch("/api/pool/public").then(r=>r.json()).then(s=>{
+  document.getElementById("st-nodes").textContent = s.nodes ?? 0;
+  document.getElementById("st-share").textContent = (s.total_share ?? 0) + "%";
+  document.getElementById("st-served").textContent = s.served ?? 0;
+}).catch(()=>{});
+fetch("/api/pool/leaderboard").then(r=>r.json()).then(d=>{
+  const box = document.getElementById("leaders");
+  if (!box) return;
+  const medals = ["🥇","🥈","🥉"];
+  if (!d.leaders || !d.leaders.length) {
+    box.innerHTML = '<p style="color:var(--muted)">No served requests yet — run <code>quaestio pool-serve</code> and take the crown.</p>';
+    return;
+  }
+  box.innerHTML = d.leaders.map((l,i)=>
+    `<div class="leader"><span>${medals[i] || "▸"} ${l.name}</span><span class="served">${l.served} served · ${l.share}%</span></div>`
+  ).join("");
+}).catch(()=>{});
+document.querySelectorAll(".copybtn").forEach(btn=>{
+  if (!btn.dataset.copy) return;
+  btn.addEventListener("click", async ()=>{
+    const el = document.getElementById(btn.dataset.copy);
+    const text = el ? el.textContent : "";
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    btn.textContent = "✓ Copied";
+    btn.classList.add("ok");
+    setTimeout(()=>{ btn.textContent = "⧉ Copy"; btn.classList.remove("ok"); }, 1600);
+  });
+});
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/")
+async def index(request: Request):
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if host.startswith("pool."):
+        return HTMLResponse(POOL_PAGE)
+    return FileResponse(os.path.join(BASE, "static", "index.html"))
