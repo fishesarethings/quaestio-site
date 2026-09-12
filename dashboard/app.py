@@ -28,7 +28,7 @@ import urllib.request
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/bot")
@@ -1404,6 +1404,83 @@ async def api_host_stats(request: Request):
 # Pages
 # ---------------------------------------------------------------------------
 
+@app.get("/api/pool/public")
+async def api_pool_public():
+    """Public pool totals for the contributor landing page. No auth, no
+    identities — counts and sums only."""
+    conn = db()
+    row = conn.execute(
+        "SELECT COUNT(*) c, COALESCE(SUM(share),0) s, COALESCE(SUM(served),0) t"
+        " FROM hosters WHERE enabled=1"
+    ).fetchone()
+    conn.close()
+    return {"nodes": int(row["c"] or 0), "total_share": int(row["s"] or 0),
+            "served": int(row["t"] or 0)}
+
+
+POOL_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Quaestio community pool — lend spare AI compute, earn quota, memory and priority routing.">
+<title>Quaestio · Community pool</title>
+<link rel="icon" href="https://quaestio.online/assets/logo-512.png">
+<style>
+:root{--bg:#070b14;--text:#eef1f8;--muted:#9aa4bd;--indigo:#6366f1;--cyan:#22d3ee}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:48px 20px 64px}
+.wrap{max-width:640px;width:100%}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:var(--text)}
+.brand img{width:36px;height:36px;border-radius:10px}
+h1{font-size:clamp(30px,6vw,44px);line-height:1.1;letter-spacing:-.02em;margin:12px 0 14px}
+.grad{background:linear-gradient(110deg,#c4b5fd,#818cf8 45%,#67e8f9);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{color:var(--muted);font-size:1.05rem;margin-bottom:26px}
+.stats{display:flex;gap:12px;margin-bottom:26px;flex-wrap:wrap}
+.stat{flex:1;min-width:140px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:14px 16px}
+.stat .num{font-size:1.5rem;font-weight:700}
+.stat .lbl{color:var(--muted);font-size:.82rem}
+.card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:20px;margin-bottom:14px}
+.card h3{margin-bottom:8px}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:2px 7px;color:#c7d2fe}
+pre{background:#0b1120;border:1px solid rgba(255,255,255,.09);border-radius:10px;padding:14px;overflow-x:auto;margin-top:10px}
+pre code{background:none;border:none;padding:0}
+ul{margin:8px 0 0 20px;color:var(--muted)}
+.links{margin-top:26px;color:var(--muted)}
+.links a{color:var(--cyan)}
+a{color:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="brand" href="https://quaestio.online"><img src="https://quaestio.online/assets/logo-512.png" alt="Quaestio"><strong>Quaestio</strong>&nbsp;pool</a>
+  <h1>Lend spare AI compute.<br><span class="grad">Earn real perks.</span></h1>
+  <p class="lead">Your box answers AI requests for Quaestio servers whenever it's online — and goes quiet on its own when it's not. Anonymous by design: random node IDs only, endpoints encrypted.</p>
+  <div class="stats">
+    <div class="stat"><div class="num" id="st-nodes">…</div><div class="lbl">nodes online</div></div>
+    <div class="stat"><div class="num" id="st-share">…</div><div class="lbl">capacity shared</div></div>
+    <div class="stat"><div class="num" id="st-served">…</div><div class="lbl">requests served</div></div>
+  </div>
+  <div class="card"><h3>① Install</h3><pre><code>curl -fsSL https://quaestio.online/bot/install.sh | bash</code></pre></div>
+  <div class="card"><h3>② Serve</h3><pre><code>quaestio pool-serve</code></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
+  <div class="card"><h3>③ Perks</h3><ul><li>+25 AI quota above host caps</li><li>+2 conversation memory</li><li>Priority routing — your box serves you first</li><li>🌟 contributor badge in <code>/ai status</code></li></ul></div>
+  <p class="links">Run a Discord server? <a href="https://admin.quaestio.online">Open the admin panel</a> · <a href="https://quaestio.online">quaestio.online</a></p>
+</div>
+<script>
+fetch("/api/pool/public").then(r=>r.json()).then(s=>{
+  document.getElementById("st-nodes").textContent = s.nodes ?? 0;
+  document.getElementById("st-share").textContent = (s.total_share ?? 0) + "%";
+  document.getElementById("st-served").textContent = s.served ?? 0;
+}).catch(()=>{});
+</script>
+</body>
+</html>
+"""
+
+
 @app.get("/")
 async def index(request: Request):
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if host.startswith("pool."):
+        return HTMLResponse(POOL_PAGE)
     return FileResponse(os.path.join(BASE, "static", "index.html"))
