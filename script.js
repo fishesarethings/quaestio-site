@@ -24,6 +24,12 @@
       { p: "Quaestio 🤖", cmd: "", out: "▸ ❓ Red planet? Reply <code>/answer mars</code>" },
       { p: "Kai 💬", cmd: " /answer mars", out: null },
       { p: "Quaestio 🤖", cmd: "", out: '▸ ✅ Correct, Kai! <b>+1</b> trivia point.' },
+      { p: "Nova 💬", cmd: " /hangman race @Kai", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ 🏁 <b>Hangman race:</b> Nova vs Kai — fastest solver wins!" },
+      { p: "Kai 💬", cmd: " /majority", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ 📊 <b>Majority Rules:</b> cats <b>62%</b> vs dogs <b>38%</b> — majority scores!" },
+      { p: "Nova 💬", cmd: " /truthordare", out: null },
+      { p: "Quaestio 🤖", cmd: "", out: "▸ 🎲 <b>Truth or Dare:</b> Nova starts! Pick 💭 Truth, 🔥 Dare, or 🎲 Random." },
       { p: "$", cmd: " /warn @spammer breaking rule 3", out: null },
       { p: "Quaestio 🤖", cmd: "", out: '<span class="t-ok">✓</span> <b>@spammer</b> warned · 2/3 warns (auto-kick at 3)' },
     ];
@@ -257,7 +263,23 @@
       return `🎰 live slots: ${roll.join(" ")} — ${win ? "win!" : "try again"}`;
     },
     "/trivia": () => "❓ live trivia: Red planet? It's Mars. Try /answer in Discord!",
+    "/hangman": () => "🎯 live hangman: P _ T H O N — guess a letter with /hm_guess!",
+    "/wouldyou": () => "🤔 live would-you: 🐉 dragon vs 🦄 unicorn — vote A or B!",
+    "/truthordare": () => "🎲 live ToD: TRUTH — what's your dream vacation?",
+    "/majority": () => "📊 live majority: cats 62% vs dogs 38% — majority scores!",
+    "/scramble": () => "🔀 live scramble: N O H T Y P — solve with /unscramble!",
   };
+  document.querySelectorAll(".stat-link").forEach((tile) => {
+    tile.addEventListener("click", () => {
+      const href = tile.dataset.href;
+      if (!href) return;
+      if (href.startsWith("#")) {
+        document.querySelector(href)?.scrollIntoView({ behavior: "smooth" });
+      } else {
+        window.open(href, "_blank", "noopener");
+      }
+    });
+  });
   document.querySelectorAll(".cmd").forEach((btn) => {
     btn.addEventListener("contextmenu", (e) => {
       const fn = live[btn.dataset.cmd];

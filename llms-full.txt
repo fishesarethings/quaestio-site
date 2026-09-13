@@ -1,6 +1,6 @@
 # Quaestio — full AI brief (llms-full.txt)
 
-> The complete machine-readable reference: product, all 48 commands, hosting
+> The complete machine-readable reference: product, all 51 commands, hosting
 > modes, pool API, architecture, security posture, and legal position.
 > Short version: llms.txt. Skill list: skills.md. Agent auth: auth.md.
 > API catalog: api-catalog.json. Agent card: agent.json.

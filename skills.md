@@ -35,6 +35,9 @@ mode keeps answering follow-ups for a few minutes; `go away` ends it.
 ## core extras
 /help, /userinfo, /serverinfo, /avatar, /poll, /remind, /site, /contribute.
 
+## games
+/hangman (solo/together/race) + /hm_guess, /wouldyou, /truthordare (/tod alias), /majority, /scramble + /unscramble.
+
 ## pool (community compute)
 /pool — anonymous nodes online, capacity, top contributors.
 Contribute: install + `quaestio pool-serve` (outbound only, NAT-proof).

@@ -229,6 +229,8 @@ main { max-width: 1180px; margin: 0 auto; padding: 0 clamp(18px, 5vw, 48px); }
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
   margin: 46px 0 30px;
 }
+.stat-link { cursor: pointer; }
+.stat-link:hover { border-color: var(--indigo); transform: translateY(-2px); }
 .stat {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 22px 18px; text-align: center;
