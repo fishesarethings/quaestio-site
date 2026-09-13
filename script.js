@@ -180,6 +180,7 @@
       } catch {}
       setTimeout(poll, 60000);
     };
+    poll();
     setTimeout(poll, 5000);
   })();
 
