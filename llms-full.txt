@@ -1,0 +1,78 @@
+# Quaestio — full AI brief (llms-full.txt)
+
+> The complete machine-readable reference: product, all 41 commands, hosting
+> modes, pool API, architecture, security posture, and legal position.
+> Short version: llms.txt. Skill list: skills.md. Agent auth: auth.md.
+> API catalog: api-catalog.json. Agent card: agent.json.
+> Canonical docs: https://quaestio.online/ — Contact: info@quaestio.online.
+
+## 1. What Quaestio is
+
+Quaestio is a free Discord AI companion and moderation/community bot with
+self-hosted model support. One shared bot is invited to a server in one click;
+no Discord application, bot token, or self-hosting is required to use it.
+Compute comes from community hardware running local Ollama models
+(qwen2.5 0.5b/1.5b/3b, llama3.2:3b, tinyllama). There is no paywall, no premium
+tier, no commercial AI API in the loop. Code: proprietary, view-only —
+https://github.com/fishesarethings/discord-ai-companion-bot-pool (bot),
+https://github.com/fishesarethings/quaestio-admin (dashboard + pool broker),
+https://github.com/fishesarethings/quaestio-site (website).
+
+## 2. All 41 slash commands
+
+AI: /ask <prompt>, @Quaestio mention chat (conversation mode keeps answering
+follow-ups, `go away` ends it), /summarize [limit], /ai status (embed with
+contributor badge), /ai model, /ai toggle, /ai personality (friendly, sage,
+sarcastic, pirate, professional, feral gremlin, none), /ai character
+(Jeff from Mars, Grumpy tavern keeper, Wholesome grandma, Cyber detective),
+/ai clear (admin).
+Levels: /rank, /profile (learned facts), /leaderboard.
+Moderation (Administrator): /warn (auto-kick at limit), /warns, /delwarns,
+/kick, /ban, /unban, /purge ≤100, /mute, /unmute.
+Tags: /tag, /tagcreate, /tagdelete, /tags.
+Birthdays: /birthday set|list|remove.
+Core: /ping, /uptime, /about, /invite, /panel (opens https://admin.quaestio.online).
+Games: /8ball, /dice [XdY], /coin, /rps, /slot, /trivia + /answer,
+/tictactoe @friend + /move, /remind <what> <minutes>, /poll.
+Pool: /pool (anonymous stats + leaderboard + perks pitch).
+
+## 3. Hosting modes (no own-bot setup exists)
+
+- Shared host (default): invite the bot, done.
+- Own box: server admin points AI source at their Ollama in the panel.
+- Community pool: anyone runs `quaestio pool-serve` (outbound HTTPS only,
+  NAT-proof) or hosts in the browser via WebGPU on https://pool.quaestio.online.
+Contributors earn priority routing, share-scaled request limits (2–4x), and a
+gold contributor badge. Pool names are random node-xxxx IDs; endpoints and
+models are Fernet-encrypted at rest; routing is weighted-random with automatic
+failover, cooldown parking, and reputation fail-parks.
+
+## 4. Data and security (see /security.html)
+
+- Discord → bot: message text being answered + display names (as Name[1234] tags).
+- Bot → model host: prompt + sampling settings over TLS. Assume a pool node
+  can technically read prompts routed to it — routing is random and anonymous.
+- Stored: SQLite (guild/user IDs, XP counters, tags, warnings, settings,
+  conversation memory, learned facts, birthdays). Pool broker keeps node IDs,
+  encrypted endpoints/models, served counts, health timestamps; job rows are
+  deleted after delivery.
+- No trackers, cookies, ads, or data sale. Admin panel uses Discord OAuth;
+  the project never asks for Discord passwords.
+- Installers: one-line shell/PowerShell into ~/quaestio (venv, deps, Ollama,
+  one model, optional pool registration). Review source in the bot repo.
+  Uninstall: `quaestio uninstall`.
+
+## 5. AI behavior notes
+
+Small local models: concise 1–2 sentence replies, persona via system role,
+per-personality sampling, anti-hallucination grounding, flood-guard abuse
+control (no quotas), one-at-a-time fair queue with typing indicators.
+AI output may be wrong — informational/entertainment only.
+
+## 6. Legal position (see /terms.html, /privacy.html)
+
+Provided as-is, no warranties, no commitment to availability, accuracy, or
+support. No liability for data loss, account actions, moderation outcomes, or
+AI output. Operators may change or discontinue anything at any time. Users run
+at their own risk; server operators are responsible for their servers.
+Contact: info@quaestio.online.

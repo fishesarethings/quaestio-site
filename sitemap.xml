@@ -6,6 +6,7 @@
   <url><loc>https://quaestio.online/llms.txt</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
   <url><loc>https://quaestio.online/skills.md</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
   <url><loc>https://quaestio.online/auth.md</loc><changefreq>monthly</changefreq><priority>0.4</priority></url>
+  <url><loc>https://quaestio.online/llms-full.txt</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
   <url><loc>https://quaestio.online/agent.json</loc><changefreq>monthly</changefreq><priority>0.4</priority></url>
   <url><loc>https://quaestio.online/security.html</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://quaestio.online/api-catalog.json</loc><changefreq>monthly</changefreq><priority>0.4</priority></url>

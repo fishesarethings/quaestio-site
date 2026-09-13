@@ -25,12 +25,13 @@
 
   <section class="doc">
     <h1>Privacy Policy</h1>
-    <p class="meta">Effective date: <strong>August 14, 2026</strong> · Last updated: August 14, 2026</p>
+    <p class="meta">Effective date: <strong>August 14, 2026</strong> · Last updated: September 13, 2026</p>
 
     <p>This policy explains what Quaestio ("the bot", "we", "us") collects, why it collects it, and the rights you have over your data. It applies to anyone who uses the bot in a Discord server.</p>
 
     <h2>1. The short version</h2>
-    <p>Quaestio is designed to be private by default. It is typically <strong>self-hosted</strong> by the server owner on their own hardware. The bot does <strong>not</strong> sell, rent, or share your data with anyone. It does not use cookies, trackers, or advertising.</p>
+    <p>Quaestio is designed to be private by default. By default you use the <strong>shared bot</strong> (no setup); server owners may instead point it at their own hardware, and anyone may lend compute to the <strong>community pool</strong>.</p>
+    <p>We make <strong>no commitment</strong> to keep the service running, accurate, or available, and we accept <strong>no responsibility</strong> for data loss, deleted content, account actions (warns, kicks, bans, mutes), or decisions made from AI output. Everything is provided as-is — see the <a href="terms.html">Terms</a>.</p> The bot does <strong>not</strong> sell, rent, or share your data with anyone. It does not use cookies, trackers, or advertising.</p>
 
     <h2>2. What we collect</h2>
     <ul>
@@ -38,12 +39,14 @@
       <li><strong>Leveling activity</strong> — a counter of messages per user for the XP/level system.</li>
       <li><strong>Content you explicitly ask the bot to store</strong> — tags and warning reasons that server moderators create.</li>
       <li><strong>Server configuration</strong> — settings you choose, such as the welcome channel or level-reward roles.</li>
-      <li><strong>AI prompts</strong> — when you use the AI chat feature, your prompt is processed by a local AI model running on the server owner's own machine (or as otherwise described by the operator). It is not sent to third-party AI providers by the bot itself.</li>
+      <li><strong>AI prompts</strong> — your prompt is processed by a local AI model on real hardware (the shared host, the server owner's box, or a participating community host — see <a href="security.html">Security &amp; Architecture</a>). It is not sent to commercial third-party AI providers by the bot itself. Assume a pool node can technically read prompts routed to it.</li>
+    <li><strong>Conversation memory and learned facts</strong> — recent channel turns and short facts you state about yourself (e.g. likes), used to keep chats coherent.</li>
+    <li><strong>Birthdays</strong> — month/day you save with <code>/birthday set</code>.</li>
     </ul>
 
     <h2>3. What we do NOT collect</h2>
     <ul>
-      <li>Full message history or chat logs (only XP counters and the items above).</li>
+      <li>Full message history or chat logs beyond the short conversation memory above.</li>
       <li>Email addresses, phone numbers, or real names.</li>
       <li>IP addresses (beyond what Discord itself processes).</li>
       <li>Any data sold, rented, or shared with advertisers or analytics companies.</li>
