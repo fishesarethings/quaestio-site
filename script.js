@@ -193,8 +193,13 @@
   }
 
   /* ---------------- Animated counters ---------------- */
+  window.__liveStats = window.__liveStats || {};
   const counters = document.querySelectorAll("[data-count]");
   const animate = (el) => {
+    // Live-backed counters (servers/messages/cmds/nodes): poll already set
+    // the true text — never rewind them to the stale HTML fallback.
+    if (el.id && el.id.startsWith("stat-") &&
+        !["stat-commands", "stat-ai", "stat-paywalls", "stat-private"].includes(el.id)) return;
     const target = parseInt(el.dataset.count, 10);
     const suffix = el.dataset.suffix || "";
     if (reduced) { el.textContent = target + suffix; return; }
