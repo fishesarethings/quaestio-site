@@ -461,6 +461,10 @@ footer {
 .consent a { color: #c7d2fe; }
 .consent button { background: var(--indigo, #6366f1); color: #fff; border: none; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: .85rem; white-space: nowrap; }
 .consent.hidden { display: none; }
+.consent-inner { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.consent-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.consent-row label { display: flex; gap: 6px; align-items: center; font-size: .85rem; }
+.consent-btns { display: flex; gap: 8px; }
 
 /* Doc-page footer with source link */
 .doc-footer { max-width: 780px; margin: 24px auto 48px; padding: 16px clamp(18px, 5vw, 48px) 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; display: flex; gap: 10px; align-items: center; justify-content: center; }

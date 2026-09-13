@@ -333,6 +333,18 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
         <p>Yes. The bot itself is light. For the AI, a 1&ndash;4 GB model runs fine on a small VPS or a spare PC; if your box can&rsquo;t host a model, you can point Quaestio at a compatible model endpoint elsewhere.</p>
       </details>
       <details class="faq-item reveal">
+        <summary>Why the name Quaestio?</summary>
+        <p>It's Latin for <em>question</em> (pronounced KWY-sti-oh) — fitting for a bot that answers them. The name is a nod, not a claim: no affiliation with anything else called Quaestio.</p>
+      </details>
+      <details class="faq-item reveal">
+        <summary>Is Quaestio open source?</summary>
+        <p>The code is view-only on GitHub (<a href="https://github.com/fishesarethings/quaestio-site">website</a>, <a href="https://github.com/fishesarethings/discord-ai-companion-bot-pool">bot</a>, <a href="https://github.com/fishesarethings/quaestio-admin">admin</a>, <a href="https://github.com/fishesarethings/quaestio-pool">pool</a>) under a proprietary license — read and learn, but don't copy, host, or redistribute. We keep it inspectable so you can verify what the installer does and how the pool handles data.</p>
+      </details>
+      <details class="faq-item reveal">
+        <summary>Who runs this, and how do I reach you?</summary>
+        <p>An independent project by fishesarethings — contact <a href="mailto:info@quaestio.online">info@quaestio.online</a> (best effort). Issues and changelog live on the GitHub repos linked above.</p>
+      </details>
+      <details class="faq-item reveal">
         <summary>Is this affiliated with Discord or MEE6?</summary>
         <p>No. Quaestio is an independent project, not affiliated with, endorsed by, or connected to Discord Inc. or any other bot. &ldquo;Discord&rdquo; is a trademark of Discord Inc.</p>
       </details>
@@ -386,9 +398,17 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
 </footer>
 
 
-<div class="consent" id="consent" role="region" aria-label="Terms notice">
-  <span>By using Quaestio (bot, sites, or pool) you agree to the <a href="terms.html">Terms</a> and <a href="privacy.html">Privacy Policy</a> — as-is, no warranties, use at your own risk.</span>
-  <button id="consent-ok" aria-label="Accept and dismiss">Got it</button>
+<div class="consent hidden" id="consent" role="dialog" aria-modal="false" aria-label="Privacy choices">
+  <div class="consent-inner">
+    <span><strong>Your privacy choices.</strong> This site uses only what it needs: <a href="privacy.html#cookies">details</a>. Analytics off by default — opt in below. By continuing you agree to the <a href="terms.html">Terms</a> and <a href="privacy.html">Privacy Policy</a>.</span>
+    <div class="consent-row">
+      <label><input type="checkbox" id="consent-analytics"> Anonymous analytics</label>
+      <div class="consent-btns">
+        <button id="consent-accept" class="btn btn-sm">Accept selected</button>
+        <button id="consent-reject" class="btn btn-sm btn-ghost">Essential only</button>
+      </div>
+    </div>
+  </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 

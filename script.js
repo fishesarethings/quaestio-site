@@ -83,17 +83,17 @@
 
   /* ---------------- Consent banner ---------------- */
   try {
-    if (localStorage.getItem("q_consent") !== "1") {
-      const bar = document.getElementById("consent");
-      const btn = document.getElementById("consent-ok");
-      if (bar && btn) {
-        btn.addEventListener("click", () => {
-          bar.classList.add("hidden");
-          try { localStorage.setItem("q_consent", "1"); } catch {}
-        });
-      }
-    } else {
-      document.getElementById("consent")?.classList.add("hidden");
+    const saved = (() => { try { return JSON.parse(localStorage.getItem("q_consent_v1") || "null"); } catch { return null; } })();
+    const bar = document.getElementById("consent");
+    if (!saved && bar) {
+      bar.classList.remove("hidden");
+      const done = (analytics) => {
+        try { localStorage.setItem("q_consent_v1", JSON.stringify({ essential: true, analytics: !!analytics, at: Date.now() })); } catch {}
+        bar.classList.add("hidden");
+      };
+      document.getElementById("consent-accept")?.addEventListener("click", () =>
+        done(document.getElementById("consent-analytics")?.checked));
+      document.getElementById("consent-reject")?.addEventListener("click", () => done(false));
     }
   } catch {}
 
