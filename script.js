@@ -102,6 +102,13 @@
     const el = document.getElementById("stat-servers");
     if (!el) return;
     let last = parseInt(el.dataset.count || "2", 10);
+    const box = el.closest(".stat");
+    const popBox = () => {
+      if (!box) return;
+      box.style.transition = "transform .35s";
+      box.style.transform = "scale(1.12)";
+      setTimeout(() => (box.style.transform = ""), 380);
+    };
     const burst = () => {
       const c = document.createElement("canvas");
       c.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:9999";
@@ -136,6 +143,17 @@
           el.dataset.count = String(n);
           el.textContent = String(n);
           burst();
+          popBox();
+        }
+        const msgs = document.getElementById("stat-messages");
+        if (msgs && Number.isFinite(d.messages)) {
+          msgs.dataset.count = String(d.messages);
+          msgs.textContent = Number(d.messages).toLocaleString();
+        }
+        const cmds = document.getElementById("stat-cmds");
+        if (cmds && Number.isFinite(d.cmds)) {
+          cmds.dataset.count = String(d.cmds);
+          cmds.textContent = Number(d.cmds).toLocaleString();
         }
       } catch {}
       setTimeout(poll, 60000);
