@@ -2,7 +2,7 @@
 
 > Free Discord AI companion. Full reference: /llms-full.txt.
 
-> Free, self-hosted Discord AI companion. 41 commands, no paywall, no subscriptions.
+> Free, self-hosted Discord AI companion. 48 commands, no paywall, no subscriptions.
 
 Quaestio is a self-hosted Discord bot with a local AI brain (Ollama): keep-chatting AI without @-ing every time, 6 personalities (friendly, sage, sarcastic, pirate, professional, feral gremlin) plus characters, conversation memory, XP levels with reward roles, birthdays, moderation (warn/kick/ban/mute/purge), tags, welcomes, and games (8ball, dice, coin, rps, trivia, slots, tic-tac-toe).
 

@@ -1,6 +1,6 @@
 # Quaestio — full AI brief (llms-full.txt)
 
-> The complete machine-readable reference: product, all 41 commands, hosting
+> The complete machine-readable reference: product, all 48 commands, hosting
 > modes, pool API, architecture, security posture, and legal position.
 > Short version: llms.txt. Skill list: skills.md. Agent auth: auth.md.
 > API catalog: api-catalog.json. Agent card: agent.json.
@@ -18,7 +18,7 @@ https://github.com/fishesarethings/discord-ai-companion-bot-pool (bot),
 https://github.com/fishesarethings/quaestio-admin (dashboard + pool broker),
 https://github.com/fishesarethings/quaestio-site (website).
 
-## 2. All 41 slash commands
+## 2. All 48 slash commands
 
 AI: /ask <prompt>, @Quaestio mention chat (conversation mode keeps answering
 follow-ups, `go away` ends it), /summarize [limit], /ai status (embed with

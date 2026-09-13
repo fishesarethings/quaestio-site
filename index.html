@@ -20,6 +20,14 @@
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Quaestio","operatingSystem":"Discord","applicationCategory":"CommunicationApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"Free self-hosted Discord AI companion: keep-chatting AI, 6 personalities, characters, XP levels, birthdays, moderation, tags, games. 41 commands, no paywall.","url":"https://quaestio.online/","author":{"@type":"Organization","name":"Quaestio","url":"https://quaestio.online/"}}
 </script>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"Is it really free?","acceptedAnswer":{"@type":"Answer","text":"Yes. All 48 commands have no paywall; Quaestio runs on community hardware."}},
+{"@type":"Question","name":"Do I need a Discord bot token?","acceptedAnswer":{"@type":"Answer","text":"No. You invite the shared bot; contributors lend compute with no token."}},
+{"@type":"Question","name":"Why the name Quaestio?","acceptedAnswer":{"@type":"Answer","text":"Latin for question (KWY-sti-oh)."}},
+{"@type":"Question","name":"Is Quaestio open source?","acceptedAnswer":{"@type":"Answer","text":"View-only source on GitHub under a proprietary license."}}
+]}
+</script>
 <link rel="icon" href="assets/logo-512.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -95,7 +103,7 @@
     <div class="stat"><span class="stat-num" data-count="2" id="stat-servers">2</span><span class="stat-label">Servers</span></div>
     <div class="stat"><span class="stat-num" data-count="0" id="stat-messages">0</span><span class="stat-label">Messages</span></div>
     <div class="stat"><span class="stat-num" data-count="0" id="stat-cmds">0</span><span class="stat-label">Commands used</span></div>
-    <div class="stat"><span class="stat-num" data-count="41">41</span><span class="stat-label">Commands</span></div>
+    <div class="stat"><span class="stat-num" data-count="48">48</span><span class="stat-label">Commands</span></div>
     <div class="stat"><span class="stat-num" data-count="1">1</span><span class="stat-label">AI brain</span></div>
     <div class="stat"><span class="stat-num" data-count="0" data-suffix="$">0$</span><span class="stat-label">Paywalls</span></div>
     <div class="stat"><span class="stat-num" data-count="100" data-suffix="%">100%</span><span class="stat-label">Private</span></div>
@@ -163,7 +171,7 @@
 
   <section class="section" id="commands">
     <div class="section-head reveal">
-      <h2>41 commands. <span class="grad">Zero locked behind paywalls.</span></h2>
+      <h2>48 commands. <span class="grad">Zero locked behind paywalls.</span></h2>
       <p class="muted" id="cmd-hint">Tap a command to copy it — or <b>right-click any game</b> (/dice, /8ball, /coin, /rps, /slot, /trivia) for a live test.</p>
     </div>
 
@@ -227,6 +235,16 @@
         <button class="cmd" data-cmd="/about">/about</button>
         <button class="cmd" data-cmd="/invite">/invite</button>
         <button class="cmd" data-cmd="/panel">/panel</button>
+        <button class="cmd" data-cmd="/site">/site</button>
+        <button class="cmd" data-cmd="/contribute">/contribute</button>
+        <button class="cmd" data-cmd="/pool">/pool</button>
+        <button class="cmd" data-cmd="/help">/help</button>
+        <button class="cmd" data-cmd="/userinfo">/userinfo</button>
+        <button class="cmd" data-cmd="/serverinfo">/serverinfo</button>
+        <button class="cmd" data-cmd="/avatar">/avatar</button>
+        <button class="cmd" data-cmd="/poll">/poll</button>
+        <button class="cmd" data-cmd="/remind">/remind</button>
+        <button class="cmd" data-cmd="/answer">/answer</button>
       </div>
     </div>
     <div class="cmd-group reveal">
@@ -298,11 +316,11 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
     <div class="faq">
       <details class="faq-item reveal" open>
         <summary>Is it really free? What&rsquo;s the catch?</summary>
-        <p>Really free. The core — all 41 commands — has no paywall and no premium-gated features. Quaestio runs on the host&rsquo;s own hardware, so there&rsquo;s nothing to meter. Donations are welcome but never required.</p>
+        <p>Really free. The core — all 48 commands — has no paywall and no premium-gated features. Quaestio runs on the host&rsquo;s own hardware, so there&rsquo;s nothing to meter. Donations are welcome but never required.</p>
       </details>
       <details class="faq-item reveal">
         <summary>Can the AI run on a different computer, like Windows?</summary>
-        <p>Yes. Quaestio talks to any Ollama over the network — run Ollama on a spare PC (Windows, Linux or macOS), open its port, and set the endpoint in <code>/ai endpoint</code> (admins) or <code>OLLAMA_BASE_URL</code> in <code>.env</code>. The model host can be as weak as you like; the bot handles one chat at a time and shares the brain fairly across servers.</p>
+        <p>Yes. Quaestio talks to any Ollama over the network — run Ollama on a spare PC (Windows, Linux or macOS), open its port, and set the endpoint in the admin panel (or <code>OLLAMA_BASE_URL</code> in <code>.env</code>) (admins) or <code>OLLAMA_BASE_URL</code> in <code>.env</code>. The model host can be as weak as you like; the bot handles one chat at a time and shares the brain fairly across servers.</p>
       </details>
       <details class="faq-item reveal">
         <summary>Can I contribute compute from Windows?</summary>
@@ -314,7 +332,7 @@ $ curl -fsSL https://quaestio.online/bot/install.sh | bash
       </details>
       <details class="faq-item reveal">
         <summary>What are the personalities and characters?</summary>
-        <p>Personalties tint how Quaestio talks — Friendly, Wise sage, Sarcastic wit, Pirate, Professional or <b>None</b> — while characters change who it pretends to be, like Jeff from Mars or a Wholesome grandma. Admins pick both in the web panel, or write their own custom ones and edit or delete them anytime.</p>
+        <p>Personalities tint how Quaestio talks — Friendly, Wise sage, Sarcastic wit, Pirate, Professional or <b>None</b> — while characters change who it pretends to be, like Jeff from Mars or a Wholesome grandma. Admins pick both in the web panel, or write their own custom ones and edit or delete them anytime.</p>
       </details>
       <details class="faq-item reveal">
         <summary>Is there a web settings panel?</summary>

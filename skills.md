@@ -30,7 +30,10 @@ mode keeps answering follow-ups for a few minutes; `go away` ends it.
 
 ## games
 /8ball, /dice [XdY], /coin, /rps <rock|paper|scissors>, /slot,
-/trivia + /answer, /tictactoe @friend + /move <1-9>.
+/trivia + /answer (DMs work too), /tictactoe @friend + /move <1-9>.
+
+## core extras
+/help, /userinfo, /serverinfo, /avatar, /poll, /remind, /site, /contribute.
 
 ## pool (community compute)
 /pool — anonymous nodes online, capacity, top contributors.
