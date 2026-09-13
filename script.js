@@ -97,6 +97,52 @@
     }
   } catch {}
 
+  /* ---------------- Live server count ---------------- */
+  (() => {
+    const el = document.getElementById("stat-servers");
+    if (!el) return;
+    let last = parseInt(el.dataset.count || "2", 10);
+    const burst = () => {
+      const c = document.createElement("canvas");
+      c.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:9999";
+      document.body.appendChild(c);
+      const x = c.getContext("2d");
+      c.width = innerWidth; c.height = innerHeight;
+      const cols = ["#6366f1", "#22d3ee", "#34d399", "#f5c518", "#f472b6"];
+      const ps = Array.from({ length: 60 }, () => ({
+        x: innerWidth / 2 + (Math.random() - 0.5) * 300, y: innerHeight * 0.3,
+        vx: (Math.random() - 0.5) * 10, vy: -Math.random() * 10 - 2,
+        s: Math.random() * 8 + 3, c: cols[(Math.random() * cols.length) | 0],
+      }));
+      let f = 0;
+      const tick = () => {
+        x.clearRect(0, 0, c.width, c.height);
+        ps.forEach((p) => {
+          p.x += p.vx; p.y += p.vy; p.vy += 0.45;
+          x.fillStyle = p.c; x.fillRect(p.x, p.y, p.s, p.s * 0.6);
+        });
+        if (++f < 100) requestAnimationFrame(tick);
+        else c.remove();
+      };
+      tick();
+    };
+    const poll = async () => {
+      try {
+        const r = await fetch("https://admin.quaestio.online/api/site/stats");
+        const d = await r.json();
+        const n = parseInt(d.servers, 10);
+        if (Number.isFinite(n) && n > last) {
+          last = n;
+          el.dataset.count = String(n);
+          el.textContent = String(n);
+          burst();
+        }
+      } catch {}
+      setTimeout(poll, 60000);
+    };
+    setTimeout(poll, 5000);
+  })();
+
   /* ---------------- Scroll reveal ---------------- */
   const revealEls = document.querySelectorAll(".reveal");
   if ("IntersectionObserver" in window && !reduced) {
