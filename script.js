@@ -81,6 +81,22 @@
     reduced ? script.forEach(s => line(s.p, s.cmd, s.out)) : tick();
   }
 
+  /* ---------------- Consent banner ---------------- */
+  try {
+    if (localStorage.getItem("q_consent") !== "1") {
+      const bar = document.getElementById("consent");
+      const btn = document.getElementById("consent-ok");
+      if (bar && btn) {
+        btn.addEventListener("click", () => {
+          bar.classList.add("hidden");
+          try { localStorage.setItem("q_consent", "1"); } catch {}
+        });
+      }
+    } else {
+      document.getElementById("consent")?.classList.add("hidden");
+    }
+  } catch {}
+
   /* ---------------- Scroll reveal ---------------- */
   const revealEls = document.querySelectorAll(".reveal");
   if ("IntersectionObserver" in window && !reduced) {
