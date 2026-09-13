@@ -15,10 +15,10 @@ Compute comes from community hardware running local Ollama models
 (qwen2.5 0.5b/1.5b/3b, llama3.2:3b, tinyllama). There is no paywall, no premium
 tier, no commercial AI API in the loop. Code: proprietary, view-only —
 https://github.com/fishesarethings/discord-ai-companion-bot-pool (bot),
-https://github.com/fishesarethings/quaestio-admin (dashboard + pool broker),
-https://github.com/fishesarethings/quaestio-site (website).
+https://github.com/fishesarethings/quaestio-admin-panel (dashboard + pool broker),
+https://github.com/fishesarethings/quaestio-website (website).
 
-## 2. All 48 slash commands
+## 2. All 51 slash commands
 
 AI: /ask <prompt>, @Quaestio mention chat (conversation mode keeps answering
 follow-ups, `go away` ends it), /summarize [limit], /ai status (embed with

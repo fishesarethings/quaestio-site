@@ -30,7 +30,7 @@ Say "Python $pyVer OK."
 # --- 2. Download bot code ----------------------------------------------------
 New-Item -ItemType Directory -Force -Path $BotDir | Out-Null
 if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
-    $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+    $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot" }
     Say "Downloading Quaestio bot code…"
     Invoke-WebRequest -Uri "$base/bot.py" -OutFile (Join-Path $BotDir "bot.py") -UseBasicParsing
     Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
@@ -41,17 +41,17 @@ if (-not (Test-Path (Join-Path $BotDir "bot.py"))) {
 } else {
     Say "Bot code already present at $BotDir — skipping download."
     if (-not (Test-Path (Join-Path $BotDir "config.py"))) {
-        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot" }
         Say "Fetching config.py…"
         Invoke-WebRequest -Uri "$base/config.py" -OutFile (Join-Path $BotDir "config.py") -UseBasicParsing
     }
     if (-not (Test-Path (Join-Path $BotDir "quaestio.py"))) {
-        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot" }
         Say "Fetching the manage tool (quaestio.py)…"
         Invoke-WebRequest -Uri "$base/quaestio.py" -OutFile (Join-Path $BotDir "quaestio.py") -UseBasicParsing
     }
     if (-not (Test-Path (Join-Path $BotDir "install_wizard.py"))) {
-        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        $base = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot" }
         Say "Fetching the install wizard…"
         Invoke-WebRequest -Uri "$base/install_wizard.py" -OutFile (Join-Path $BotDir "install_wizard.py") -UseBasicParsing
     }
@@ -79,7 +79,7 @@ if ((Test-Path $Wizard) -and (-not $env:QUAESTIO_NO_WIZARD) -and (-not $RemoteOl
         Say "Use ↑/↓ or Tab to move, Enter/Space to pick, Esc to go back."
         $env:BOT_TOKEN = if ($env:BOT_TOKEN) { $env:BOT_TOKEN } else { "" }
         $env:QUAESTIO_DIR = $InstallDir
-        $env:QUAESTIO_SRC = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot" }
+        $env:QUAESTIO_SRC = if ($env:QUAESTIO_SRC) { $env:QUAESTIO_SRC } else { "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot" }
         $env:OLLAMA_BASE_URL = $RemoteOllama
         & (Join-Path $Venv "Scripts\python.exe") $Wizard
         if ($LASTEXITCODE -eq 0) { $WizardOK = $true }

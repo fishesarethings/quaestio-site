@@ -161,18 +161,22 @@
           cmds.dataset.count = String(d.cmds);
           cmds.textContent = Number(d.cmds).toLocaleString();
         }
-        const nodes = document.getElementById("stat-nodes");
-        if (nodes && Number.isFinite(d.nodes)) {
-          if (Number(d.nodes) > parseInt(nodes.dataset.count || "0", 10)) {
-            nodes.dataset.count = String(d.nodes);
-            nodes.textContent = String(d.nodes);
-            burst();
-            popBox();
-          } else {
-            nodes.dataset.count = String(d.nodes);
-            nodes.textContent = String(d.nodes);
+        try {
+          const ar = await (await fetch("https://pool.quaestio.online/api/pool/active")).json();
+          const an = (ar.active || []).length;
+          const nodes = document.getElementById("stat-nodes");
+          if (nodes && Number.isFinite(an)) {
+            if (an > parseInt(nodes.dataset.count || "0", 10)) {
+              nodes.dataset.count = String(an);
+              nodes.textContent = String(an);
+              burst();
+              popBox();
+            } else {
+              nodes.dataset.count = String(an);
+              nodes.textContent = String(an);
+            }
           }
-        }
+        } catch {}
       } catch {}
       setTimeout(poll, 60000);
     };

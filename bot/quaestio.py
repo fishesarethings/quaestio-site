@@ -204,7 +204,7 @@ def update():
              f"  curl -fsSL https://quaestio.online/bot/install.sh | bash")
     say("Updating bot code from GitHub…")
     base = os.environ.get("QUAESTIO_SRC",
-                          "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+                          "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot")
     for f in ("bot.py", "config.py", "requirements.txt", ".env.example", "quaestio.py",
                 "install_wizard.py"):
         subprocess.run(["curl", "-fsSL", f"{base}/{f}", "-o", os.path.join(BOT_DIR, f)])
@@ -295,7 +295,7 @@ def install_menu():
     os.makedirs(BOT_DIR, exist_ok=True)
     say("Fetching the latest installer wizard…")
     base = os.environ.get("QUAESTIO_SRC",
-                          "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+                          "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot")
     fetched = False
     # curl first (handles proxies/certs better on some Macs), then urllib.
     if which("curl"):
@@ -321,7 +321,7 @@ def install_menu():
     env = dict(os.environ)
     env.setdefault("QUAESTIO_DIR", INSTALL_DIR)
     env.setdefault("BOT_TOKEN", read_env("BOT_TOKEN") or "")
-    env.setdefault("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+    env.setdefault("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot")
     if os.path.exists(KEYFILE_LOCAL) and not os.environ.get("QUAESTIO_KEY_FILE"):
         env["QUAESTIO_KEY_FILE"] = KEYFILE_LOCAL
     subprocess.call([sys.executable, wizard], env=env)

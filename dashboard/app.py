@@ -1540,7 +1540,7 @@ a{color:inherit}
     <div class="stat"><div class="num" id="st-served">…</div><div class="lbl">requests served</div></div>
   </div>
   <div class="card"><h3>① Install</h3><pre><code id="cmd-install">curl -fsSL https://quaestio.online/bot/install.sh | bash</code><button class="copybtn" data-copy="cmd-install">⧉ Copy</button></pre></div>
-  <p style="color:var(--muted);font-size:.82rem">Review source first: <a href="https://github.com/fishesarethings/quaestio-site/blob/main/bot/install.sh">install.sh</a> · uninstall anytime with <code>quaestio uninstall</code>.</p>
+  <p style="color:var(--muted);font-size:.82rem">Review source first: <a href="https://github.com/fishesarethings/quaestio-website/blob/main/bot/install.sh">install.sh</a> · uninstall anytime with <code>quaestio uninstall</code>.</p>
   <div class="card"><h3>② Serve</h3><pre><code id="cmd-serve">quaestio pool-serve</code><button class="copybtn" data-copy="cmd-serve">⧉ Copy</button></pre><p style="color:var(--muted);margin-top:8px">Registers you (or reuses your node) and works jobs until Ctrl-C. Behind any NAT — no port forwards, no extra accounts.</p></div>
   <div class="card"><h3>🌐 Or host right in this browser</h3>
     <p style="color:var(--muted)">No install at all — the AI model runs on this page with WebGPU. Keep the tab open and it serves pool jobs like any other node.</p>

@@ -21,7 +21,7 @@ BOT_DIR = os.path.join(INSTALL_DIR, "bot")
 DASH_DIR = os.path.join(INSTALL_DIR, "dashboard")
 VENV = os.path.join(INSTALL_DIR, ".venv")
 SERVICE = "/etc/systemd/system/quaestio.service"
-SRC = os.environ.get("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot")
+SRC = os.environ.get("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot")
 MODEL_DEFAULT = os.environ.get("QUAESTIO_MODEL", "qwen2.5:1.5b")
 MODELS = [
     "qwen2.5:0.5b",
@@ -904,7 +904,7 @@ def _step_pool():
 def _step_web():
     if not cfg.web:
         return "skipped (web panel not requested)"
-    base = os.environ.get("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/dashboard")
+    base = os.environ.get("QUAESTIO_SRC", "https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/dashboard")
     os.makedirs(os.path.join(DASH_DIR, "static"), exist_ok=True)
     for f in ("app.py", "requirements.txt"):
         _run(["curl", "-fsSL", f"{base}/{f}", "-o", os.path.join(DASH_DIR, f)], silent=True)

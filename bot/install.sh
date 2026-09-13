@@ -103,7 +103,7 @@ mkdir -p "$BOT_DIR"
 
 if [[ ! -f "$BOT_DIR/bot.py" ]]; then
   say "Downloading Quaestio bot code…"
-  BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+  BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot}"
   curl -fsSL "$BASE/bot.py" -o "$BOT_DIR/bot.py" || die "Could not download bot.py (check your network)."
   curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
   curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
@@ -115,17 +115,17 @@ else
   # Make sure config.py exists too (added in a later version)
   if [[ ! -f "$BOT_DIR/config.py" ]]; then
     say "Fetching config.py…"
-    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot}"
     curl -fsSL "$BASE/config.py" -o "$BOT_DIR/config.py" || warn "Could not download config.py."
   fi
   if [[ ! -f "$BOT_DIR/quaestio.py" ]]; then
     say "Fetching the manage tool (quaestio.py)…"
-    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+    BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot}"
     curl -fsSL "$BASE/quaestio.py" -o "$BOT_DIR/quaestio.py" || warn "Could not download the manage tool."
   fi
   # The wizard gets refreshed on every run so fixes/tweaks reach you instantly.
   say "Fetching the latest install wizard…"
-  BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}"
+  BASE="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot}"
   curl -fsSL "$BASE/install_wizard.py" -o "$BOT_DIR/install_wizard.py" || warn "Could not download the install wizard."
 fi
 chmod +x "$BOT_DIR/quaestio.py" 2>/dev/null || true
@@ -171,7 +171,7 @@ if [[ -f "$INSTALL_WIZARD" ]] && { [[ -t 0 ]] || [[ -e /dev/tty ]]; } \
     QUAESTIO_MODEL="$MODEL" \
     QUAESTIO_DIR="$INSTALL_DIR" \
     QUAESTIO_KEY_FILE="${QUAESTIO_KEY_FILE:-}" \
-    QUAESTIO_SRC="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-site/main/bot}" \
+    QUAESTIO_SRC="${QUAESTIO_SRC:-https://raw.githubusercontent.com/fishesarethings/quaestio-website/main/bot}" \
       "$VENV/bin/python" "$INSTALL_WIZARD" < /dev/tty && WIZARD_OK=1
   else
     warn "Textual isn't installed in the venv yet — the classic text flow will be used."
