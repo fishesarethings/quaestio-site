@@ -224,12 +224,12 @@ services, none of these require a paid license at normal scale. Which model a
 server uses is set by that server's admin (see `/ai model`).
 
 ## License
-Proprietary — view-only ([LICENSE.md](LICENSE.md)). Code is split across [quaestio-bot](https://github.com/fishesarethings/quaestio-bot) (bot + installers) and [quaestio-admin](https://github.com/fishesarethings/quaestio-admin) (dashboard + pool broker). Do not copy, host, or redistribute.
+Proprietary — view-only ([LICENSE.md](LICENSE.md)). Code is split across [quaestio-bot](https://github.com/fishesarethings/discord-ai-companion-bot-pool) (bot + installers) and [quaestio-admin](https://github.com/fishesarethings/quaestio-admin) (dashboard + pool broker). Do not copy, host, or redistribute.
 
 ## Repo layout vs serving
 `bot/` and `dashboard/` here are **synced serving copies** — GitHub Pages has
 no redirects, so the one-liner (`quaestio.online/bot/install.sh`) and existing
 clients need the files at these exact paths. Canonical homes (with LICENSE):
-[quaestio-bot](https://github.com/fishesarethings/quaestio-bot),
+[quaestio-bot](https://github.com/fishesarethings/discord-ai-companion-bot-pool),
 [quaestio-admin](https://github.com/fishesarethings/quaestio-admin).
 Sync them on every release.
